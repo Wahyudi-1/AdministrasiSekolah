@@ -1,28 +1,21 @@
 import { supabase } from './supabaseClient';
 
-const SOLVER_URL = (import.meta.env.VITE_SOLVER_API_URL as string)?.replace(/\/$/, '');
+const GITHUB_OWNER = import.meta.env.VITE_GITHUB_OWNER as string; // Username GitHub Anda
+const GITHUB_REPO = import.meta.env.VITE_GITHUB_REPO as string;   // Nama Repo Anda
+const GITHUB_PAT = import.meta.env.VITE_GITHUB_PAT as string;     // Opsional jika tidak memakai Supabase Webhook
 
-/**
- * Mengirim sinyal ping ke Render.com saat web pertama kali dibuka
- * agar server bangun dari mode tidur sebelum pengguna menekan tombol Generate.
- */
 export async function wakeUpSolverServer(): Promise<boolean> {
-  if (!SOLVER_URL) return false;
-  try {
-    const res = await fetch(`${SOLVER_URL}/`, { method: 'GET' });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  // GitHub Actions selalu siap (Serverless 7GB RAM), tidak butuh wake-up ping
+  return true;
 }
 
 export async function triggerScheduleGeneration(): Promise<string> {
-  // 1. Buat antrean job di Supabase
+  // 1. Buat baris tugas baru di tabel generation_jobs Supabase
   const { data: job, error } = await supabase
     .from('generation_jobs')
     .insert({
       status: 'queued',
-      progress_message: 'Menghubungi Solver Engine di Render.com (mohon tunggu ±20 detik jika server baru bangun)...'
+      progress_message: 'Memicu mesin GitHub Actions (RAM 7 GB)... Proses memakan waktu ±20-30 detik.'
     })
     .select()
     .single();
@@ -31,15 +24,27 @@ export async function triggerScheduleGeneration(): Promise<string> {
     throw new Error(`Gagal membuat antrean di Supabase: ${error?.message}`);
   }
 
-  // 2. Panggil endpoint FastAPI di Render.com
-  const response = await fetch(`${SOLVER_URL}/api/generate-timetable`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: job.id }),
-  });
+  // 2. Jika VITE_GITHUB_PAT diisi, picu langsung workflow_dispatch GitHub API dari browser
+  if (GITHUB_PAT && GITHUB_OWNER && GITHUB_REPO) {
+    const res = await fetch(
+      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/run-solver.yml/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${GITHUB_PAT}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ref: 'main',
+          inputs: { job_id: job.id },
+        }),
+      }
+    );
 
-  if (!response.ok) {
-    throw new Error(`Gagal memicu Solver Render.com (Status: ${response.status})`);
+    if (!res.ok) {
+      throw new Error(`Gagal memicu GitHub Actions (Status: ${res.status})`);
+    }
   }
 
   return job.id;
