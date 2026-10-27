@@ -1,0 +1,21 @@
+# Environment variables (Wajib untuk keamanan)
+.env
+.env.local
+.env.*.local
+
+# Frontend / Node
+node_modules/
+dist/
+dist-isolation/
+build/
+
+# Python / Backend
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# System & Editor
+.DS_Store
+.vscode/
+.idea/
