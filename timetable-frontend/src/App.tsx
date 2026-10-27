@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   FileText,
   Files,
+  Users,
 } from 'lucide-react';
 import { useRealtimeSchedule } from './hooks/useRealtimeSchedule';
 import { triggerScheduleGeneration } from './lib/solverApi';
@@ -19,6 +20,7 @@ import {
   exportTimetableToExcel,
   exportSingleViewToPdf,
   exportAllClassesMasterPdf,
+  exportAllTeachersMasterPdf,
 } from './lib/exportUtils';
 import { TimetableGrid } from './components/TimetableGrid';
 import { MasterDataModal } from './components/MasterDataModal';
@@ -94,7 +96,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
       {/* Header Utama */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30">
+      <header className="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-600 text-white rounded-lg">
@@ -110,11 +112,11 @@ export default function App() {
                       : 'bg-amber-100 text-amber-700'
                   }`}
                 >
-                  {solverOnline ? 'Solver Render: Aktif' : 'Solver Render: Standby'}
+                  {solverOnline ? 'GitHub Actions Solver: Siap' : 'Solver: Standby'}
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                Penjadwalan Otomatis Anti-Bentrok (Supabase + Render OR-Tools)
+                Penjadwalan Otomatis Anti-Bentrok (Supabase + GitHub Actions OR-Tools)
               </p>
             </div>
           </div>
@@ -164,7 +166,7 @@ export default function App() {
         {/* Notifikasi Status Realtime */}
         {activeJob && (
           <div
-            className={`p-4 rounded-xl border flex items-center justify-between ${
+            className={`p-4 rounded-xl border flex items-center justify-between print:hidden ${
               activeJob.status === 'completed'
                 ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
                 : activeJob.status === 'failed'
@@ -196,7 +198,7 @@ export default function App() {
         )}
 
         {/* Bar Filter & Tombol Ekspor PDF / Excel */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-4">
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-4 print:hidden">
           <div className="flex flex-wrap items-center gap-3">
             <div className="inline-flex rounded-lg border border-slate-200 p-1 bg-slate-100">
               <button
@@ -273,6 +275,15 @@ export default function App() {
               <Files className="w-3.5 h-3.5" />
               PDF Seluruh Kelas
             </button>
+
+            <button
+              onClick={() => exportAllTeachersMasterPdf(exportParams)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-semibold shadow-sm transition"
+              title="Cetak jadwal mengajar seluruh guru sekaligus dalam satu dokumen PDF"
+            >
+              <Users className="w-3.5 h-3.5" />
+              PDF Seluruh Guru
+            </button>
           </div>
         </div>
 
@@ -291,6 +302,7 @@ export default function App() {
             schedules={schedules}
             filterMode={filterMode}
             selectedId={selectedId}
+            onScheduleUpdated={refreshData}
           />
         )}
       </main>
