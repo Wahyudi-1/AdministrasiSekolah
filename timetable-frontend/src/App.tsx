@@ -9,10 +9,17 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Printer,
+  FileSpreadsheet,
+  FileText,
+  Files,
 } from 'lucide-react';
 import { useRealtimeSchedule } from './hooks/useRealtimeSchedule';
 import { triggerScheduleGeneration } from './lib/solverApi';
+import {
+  exportTimetableToExcel,
+  exportSingleViewToPdf,
+  exportAllClassesMasterPdf,
+} from './lib/exportUtils';
 import { TimetableGrid } from './components/TimetableGrid';
 import { MasterDataModal } from './components/MasterDataModal';
 import { TimeConfigModal } from './components/TimeConfigModal';
@@ -67,15 +74,27 @@ export default function App() {
 
   const isSolving =
     isTriggering || activeJob?.status === 'queued' || activeJob?.status === 'processing';
-  const selectedTitle =
-  filterMode === 'CLASS'
-    ? `Kelas ${classes.find((c) => c.id === selectedId)?.class_name || ''}`
-    : `Guru: ${teachers.find((t) => t.id === selectedId)?.full_name || ''}`;
+
+  const currentSelectionTitle =
+    filterMode === 'CLASS'
+      ? `Kelas_${classes.find((c) => c.id === selectedId)?.class_name || ''}`
+      : `Guru_${teachers.find((t) => t.id === selectedId)?.full_name || ''}`;
+
+  const exportParams = {
+    workDays,
+    timeSlots,
+    teachers,
+    classes,
+    rooms,
+    subjects,
+    lessons,
+    schedules,
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
       {/* Header Utama */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30 print:hidden">
+      <header className="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-600 text-white rounded-lg">
@@ -141,11 +160,11 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 space-y-6 print:p-0 print:max-w-none">
+      <main className="max-w-7xl mx-auto p-6 space-y-6">
         {/* Notifikasi Status Realtime */}
         {activeJob && (
-          <div 
-            className="print:hidden"{`p-4 rounded-xl border flex items-center justify-between ${
+          <div
+            className={`p-4 rounded-xl border flex items-center justify-between ${
               activeJob.status === 'completed'
                 ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
                 : activeJob.status === 'failed'
@@ -176,9 +195,9 @@ export default function App() {
           </div>
         )}
 
-        {/* Bar Filter Matriks */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-4 print:hidden">
-          <div className="flex items-center gap-3">
+        {/* Bar Filter & Tombol Ekspor PDF / Excel */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <div className="inline-flex rounded-lg border border-slate-200 p-1 bg-slate-100">
               <button
                 onClick={() => handleModeChange('CLASS')}
@@ -215,34 +234,46 @@ export default function App() {
                     </option>
                   ))}
             </select>
-          </div>
 
-          <div className="flex items-center gap-4 text-xs text-slate-500">
-            <span>Kartu Pelajaran: {lessons.length}</span>
-            <span>Slot Terisi: {schedules.length}</span>
             <button
               onClick={refreshData}
-              className="flex items-center gap-1 text-indigo-600 hover:underline font-medium"
+              className="flex items-center gap-1 text-xs text-indigo-600 hover:underline font-medium ml-1"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Segarkan
             </button>
-            {/* TOMBOL CETAK / SIMPAN PDF */}
+          </div>
+
+          {/* Grup Tombol Ekspor */}
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              onClick={() => window.print()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white font-semibold shadow-sm transition"
+              onClick={() => exportTimetableToExcel(exportParams)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-sm transition"
+              title="Unduh file Excel (.xlsx) berisi seluruh sheet kelas & rekap database"
             >
-              <Printer className="w-3.5 h-3.5" />
-              Cetak / Simpan PDF
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              Ekspor Excel (.xlsx)
+            </button>
+
+            <button
+              onClick={() =>
+                exportSingleViewToPdf(exportParams, filterMode, selectedId, currentSelectionTitle)
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition"
+              title="Cetak tampilan matriks yang sedang aktif saat ini ke PDF"
+            >
+              <FileText className="w-3.5 h-3.5 text-slate-600" />
+              PDF Tampilan Ini
+            </button>
+
+            <button
+              onClick={() => exportAllClassesMasterPdf(exportParams)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold shadow-sm transition"
+              title="Cetak jadwal seluruh rombel kelas sekaligus dalam satu dokumen PDF"
+            >
+              <Files className="w-3.5 h-3.5" />
+              PDF Seluruh Kelas
             </button>
           </div>
-        </div>
-
-      {/* KOP SURAT KHUSUS CETAK (Hanya muncul di kertas / PDF, tersembunyi di layar biasa) */}
-        <div className="hidden print:block text-center border-b-2 border-slate-800 pb-3 mb-4">
-          <h2 className="text-xl font-bold uppercase tracking-wide">
-            Jadwal Pelajaran Sekolah
-          </h2>
-          <p className="text-sm font-semibold text-slate-700 mt-1">{selectedTitle}</p>
         </div>
 
         {/* Matriks Jadwal */}
