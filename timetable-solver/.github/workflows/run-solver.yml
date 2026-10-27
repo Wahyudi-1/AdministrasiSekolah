@@ -1,0 +1,32 @@
+name: Run Timetable Solver (7GB RAM Engine)
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'UUID dari tabel generation_jobs di Supabase'
+        required: false
+        default: ''
+
+jobs:
+  solve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kode Solver
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instal Dependensi OR-Tools
+        run: pip install -r requirements.txt
+
+      - name: Eksekusi Perhitungan Jadwal
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GITHUB_ACTIONS: "true"
+        run: python cli_solver.py "${{ github.event.inputs.job_id }}"
