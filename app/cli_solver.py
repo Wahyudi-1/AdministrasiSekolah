@@ -1,8 +1,11 @@
 import os
 import sys
 import time
+from dotenv import load_dotenv
 from supabase import create_client, Client
-from engine import solve_school_timetable
+from solver.engine import solve_school_timetable
+
+load_dotenv()
 
 def main():
     url = os.environ.get("SUPABASE_URL")
@@ -28,7 +31,6 @@ def main():
         if res.data:
             job_id = res.data[0]["id"]
         else:
-            # Buat job baru jika dipicu manual langsung dari tab GitHub Actions
             new_job = supabase.table("generation_jobs").insert({
                 "status": "processing",
                 "progress_message": "Menjalankan Solver di mesin GitHub Actions (RAM 7 GB)..."
@@ -51,7 +53,7 @@ def main():
         if not lessons or not time_slots:
             raise ValueError("Data pelajaran (lessons) atau slot waktu (time_slots) masih kosong.")
 
-        # Panggil fungsi OR-Tools dari engine.py
+        # Panggil fungsi OR-Tools dari app/solver/engine.py
         result = solve_school_timetable(
             work_days=work_days,
             time_slots=time_slots,
@@ -64,8 +66,8 @@ def main():
         elapsed_ms = int((time.time() - start_time) * 1000)
 
         if result["status"] == "SUCCESS":
-            # Hapus jadwal lama yang tidak dikunci (is_locked = false)
-            supabase.table("schedules").delete().eq("is_locked", False).execute()
+            # Bersihkan seluruh jadwal lama sebelum memasukkan jadwal baru hasil optimasi
+            supabase.table("schedules").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
             records = [{**row, "job_id": job_id} for row in result["schedule"]]
             if records:
@@ -76,18 +78,23 @@ def main():
                 "progress_message": result["message"],
                 "execution_time_ms": elapsed_ms
             }).eq("id", job_id).execute()
+            print(f"SUKSES: {result['message']}")
         else:
             supabase.table("generation_jobs").update({
                 "status": "failed",
                 "progress_message": result["message"],
                 "execution_time_ms": elapsed_ms
             }).eq("id", job_id).execute()
+            print(f"GAGAL (INFEASIBLE): {result['message']}")
+            sys.exit(1)
 
     except Exception as e:
         supabase.table("generation_jobs").update({
             "status": "failed",
             "progress_message": f"Kesalahan sistem: {str(e)}"
         }).eq("id", job_id).execute()
+        print(f"ERROR: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
