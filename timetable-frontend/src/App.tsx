@@ -13,7 +13,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Sliders,
   ShieldAlert,
   X,
   Trash2,
@@ -701,13 +700,14 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL 1: MASTER DATA (GURU, MAPEL, KELAS) */}
+      {/* MODAL 1: MASTER DATA (GURU, MAPEL, KELAS, RUANGAN KHUSUS) */}
       <MasterDataModal
         isOpen={isMasterModalOpen}
         onClose={() => setIsMasterModalOpen(false)}
         teachers={teachers}
         subjects={subjects}
         classes={classes}
+        rooms={rooms}
         onDataUpdated={fetchAllData}
       />
 
@@ -1078,6 +1078,7 @@ export const App: React.FC = () => {
                 const tch = teachers.find((t) => t.id === l.teacher_id);
                 const sub = subjects.find((s) => s.id === l.subject_id);
                 const cls = classes.find((c) => c.id === l.class_id);
+                const rm = rooms.find((r) => r.id === l.preferred_room_id);
                 return (
                   <div
                     key={l.id}
@@ -1086,8 +1087,14 @@ export const App: React.FC = () => {
                     <div>
                       <span className="font-bold text-indigo-900">{sub?.subject_name}</span> —{' '}
                       <span className="font-semibold">Kelas {cls?.class_name}</span> ({tch?.full_name})
+                      {rm && (
+                        <span className="ml-1.5 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] font-semibold">
+                          [{rm.room_name}]
+                        </span>
+                      )}
                       <span className="ml-2 px-1.5 py-0.5 bg-indigo-100 text-indigo-800 rounded text-[10px] font-mono">
-                        {l.total_periods} JP ({Array.isArray(l.split_pattern) ? l.split_pattern.join('+') : l.split_pattern})
+                        {l.total_periods ?? l.total_periods_per_week ?? 0} JP (
+                        {Array.isArray(l.split_pattern) ? l.split_pattern.join('+') : l.split_pattern})
                       </span>
                     </div>
                     <button
