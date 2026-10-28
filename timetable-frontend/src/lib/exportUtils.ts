@@ -247,3 +247,67 @@ export function exportAllClassesMasterPdf(params: ExportParams) {
 
   doc.save(`Master_Jadwal_Seluruh_Kelas_${new Date().toISOString().slice(0, 10)}.pdf`);
 }
+
+/**
+ * 4. FITUR CETAK SELURUH GURU SEKALIGUS DALAM SATU PDF (Master PDF Guru)
+ */
+export function exportAllTeachersMasterPdf(params: ExportParams) {
+  if (params.teachers.length === 0) {
+    alert('Data guru masih kosong.');
+    return;
+  }
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const printDate = new Date().toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+
+  params.teachers.forEach((teacher, index) => {
+    if (index > 0) {
+      doc.addPage('a4', 'landscape');
+    }
+
+    const { head, body } = buildMatrixRows(params, 'TEACHER', teacher.id);
+    const totalScheduledJP = params.schedules.filter((s) => s.teacher_id === teacher.id).length;
+
+    doc.setFontSize(14);
+    doc.text(
+      `JADWAL MENGAJAR GURU - ${teacher.full_name.toUpperCase()} (${teacher.teacher_code})`,
+      14,
+      14
+    );
+    doc.setFontSize(9);
+    doc.text(
+      `Total Terjadwal: ${totalScheduledJP} JP/Minggu  |  Batas Maks Harian: ${
+        teacher.max_periods_per_day
+      } JP  |  Halaman ${index + 1} dari ${params.teachers.length}  |  Cetak: ${printDate}`,
+      14,
+      20
+    );
+
+    autoTable(doc, {
+      startY: 24,
+      head,
+      body,
+      theme: 'grid',
+      styles: {
+        fontSize: 8,
+        cellPadding: 2,
+        valign: 'middle',
+        halign: 'center',
+      },
+      headStyles: {
+        fillColor: [30, 41, 59],
+        textColor: 255,
+        fontStyle: 'bold',
+      },
+      columnStyles: {
+        0: { cellWidth: 20, fontStyle: 'bold', fillColor: [241, 245, 249] },
+      },
+    });
+  });
+
+  doc.save(`Master_Jadwal_Seluruh_Guru_${new Date().toISOString().slice(0, 10)}.pdf`);
+}
