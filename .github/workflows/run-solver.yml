@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: 'Job ID dari Supabase'
+        description: 'Biarkan kosong jika dijalankan manual'
         required: false
         default: ''
   repository_dispatch:
@@ -34,6 +34,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           GITHUB_ACTIONS: "true"
         run: |
           JOB_ID="${{ github.event.inputs.job_id || github.event.client_payload.job_id }}"
