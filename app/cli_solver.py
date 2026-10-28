@@ -1,23 +1,43 @@
 import os
 import sys
 import time
+import uuid
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from solver.engine import solve_school_timetable
 
 load_dotenv()
 
+def is_valid_uuid(val: str) -> bool:
+    try:
+        uuid.UUID(str(val))
+        return True
+    except ValueError:
+        return False
+
 def main():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    # Membaca URL dan Key dengan fallback beberapa kemungkinan nama Secret
+    url = os.environ.get("SUPABASE_URL") or os.environ.get("VITE_SUPABASE_URL")
+    key = (
+        os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+    )
+
     if not url or not key:
-        raise ValueError("SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY belum diatur di GitHub Secrets.")
+        raise ValueError(
+            f"Kredensial kosong! Status -> SUPABASE_URL: {'ADA' if url else 'KOSONG'}, "
+            f"KEY: {'ADA' if key else 'KOSONG'}. "
+            "Pastikan disimpan di Settings > Secrets and variables > Actions > Repository secrets."
+        )
 
     supabase: Client = create_client(url, key)
     start_time = time.time()
 
-    # Ambil job_id dari argumen GitHub Actions, atau cari job berstatus 'queued' terbaru di Supabase
-    job_id = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].strip() else None
+    # Validasi apakah argumen job_id adalah UUID yang sah
+    raw_arg = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1] else ""
+    job_id = raw_arg if is_valid_uuid(raw_arg) else None
 
     if not job_id:
         res = (
@@ -51,9 +71,8 @@ def main():
         lessons = supabase.table("lessons").select("*").execute().data
 
         if not lessons or not time_slots:
-            raise ValueError("Data pelajaran (lessons) atau slot waktu (time_slots) masih kosong.")
+            raise ValueError("Data pelajaran (lessons) atau slot waktu (time_slots) masih kosong di Supabase.")
 
-        # Panggil fungsi OR-Tools dari app/solver/engine.py
         result = solve_school_timetable(
             work_days=work_days,
             time_slots=time_slots,
@@ -66,7 +85,6 @@ def main():
         elapsed_ms = int((time.time() - start_time) * 1000)
 
         if result["status"] == "SUCCESS":
-            # Bersihkan seluruh jadwal lama sebelum memasukkan jadwal baru hasil optimasi
             supabase.table("schedules").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
             records = [{**row, "job_id": job_id} for row in result["schedule"]]
