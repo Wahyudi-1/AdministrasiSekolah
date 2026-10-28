@@ -39,7 +39,7 @@ jobs:
           cache-dependency-path: './timetable-frontend/package.json'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build Project Vite
         env:
