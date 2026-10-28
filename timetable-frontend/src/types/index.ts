@@ -1,11 +1,11 @@
 export type SlotType = 'PRE' | 'FORMAL' | 'POST' | 'BREAK';
 
 export interface WorkDay {
-  id: number;
+  id: string | number;
   day_index: number;
   day_name: string;
   is_active: boolean;
-  max_periods: number;
+  max_periods?: number;
 }
 
 export interface TimeSlot {
@@ -49,7 +49,7 @@ export interface Subject {
   id: string;
   subject_code: string;
   subject_name: string;
-  is_heavy_subject: boolean;
+  is_heavy_subject?: boolean;
 }
 
 export interface Lesson {
@@ -58,13 +58,16 @@ export interface Lesson {
   subject_id: string;
   class_id: string;
   preferred_room_id: string | null;
-  total_periods_per_week: number;
-  split_pattern: string;
+  // Dibuat opsional keduanya agar kompatibel dengan database dan App.tsx
+  total_periods?: number;
+  total_periods_per_week?: number;
+  split_pattern: string | number[];
   allowed_slot_types: SlotType;
 }
 
 export interface ScheduleItem {
   id: string;
+  job_id?: string;
   lesson_id: string;
   time_slot_id: string;
   teacher_id: string;
