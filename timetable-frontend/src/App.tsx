@@ -39,12 +39,14 @@ import {
   enqueueSyncAction,
   processSyncQueue,
 } from './lib/syncQueue';
+import { setIDBValue } from './lib/idb';
 import { TimetableGrid } from './components/TimetableGrid';
 import { MasterDataModal } from './components/MasterDataModal';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { AssignmentModal } from './components/AssignmentModal';
 import { AuthPage } from './components/AuthPage';
 import { AdminTokenModal } from './components/AdminTokenModal';
+import { ConflictResolverModal } from './components/ConflictResolverModal';
 import {
   WorkDay,
   TimeSlot,
@@ -56,9 +58,7 @@ import {
   ScheduleItem,
 } from './types';
 
-const ADMIN_EMAILS = [
-  'joedie.meyson@gmail.com',
-];
+const ADMIN_EMAILS = ['joedie.meyson@gmail.com'];
 
 export const App: React.FC = () => {
   // State Autentikasi & Profil Sekolah
@@ -75,10 +75,11 @@ export const App: React.FC = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState<boolean>(false);
   const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
+  const [conflictCount, setConflictCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<string>('');
 
-  // State Data Master & Jadwal
+  // State Master Data & Jadwal
   const [workDays, setWorkDays] = useState<WorkDay[]>([]);
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -93,7 +94,7 @@ export const App: React.FC = () => {
   const [selectedId, setSelectedId] = useState<string>('');
   const [printMode, setPrintMode] = useState<'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS'>('SINGLE');
 
-  // State Modal Navigasi
+  // State Modals
   const [isMasterModalOpen, setIsMasterModalOpen] = useState<boolean>(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [isAssignmentModalOpen, setIsAssignmentModalOpen] = useState<boolean>(false);
@@ -101,6 +102,7 @@ export const App: React.FC = () => {
   const [isSlotModalOpen, setIsSlotModalOpen] = useState<boolean>(false);
   const [isConstraintModalOpen, setIsConstraintModalOpen] = useState<boolean>(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
+  const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
 
   // State Konfigurasi Kartu Beban Mengajar (Multi-Kelas)
   const [configAssignmentKey, setConfigAssignmentKey] = useState<string>('');
@@ -143,14 +145,27 @@ export const App: React.FC = () => {
     );
   }, [session?.user?.email]);
 
-  // Perbarui jumlah item yang menunggu disinkronkan
   const refreshQueueCount = useCallback(() => {
     if (!session?.user?.id) return;
     const items = getSyncQueue(session.user.id);
     setPendingQueueCount(items.length);
   }, [session?.user?.id]);
 
-  // Eksekusi antrean sinkronisasi saat terhubung ke internet
+  const checkConflictCount = useCallback(async () => {
+    if (!session?.user?.id || !navigator.onLine) return;
+    try {
+      const { count } = await supabase
+        .from('sync_conflicts')
+        .select('*', { count: 'exact', head: true })
+        .eq('school_id', session.user.id)
+        .eq('resolved', false);
+      setConflictCount(count || 0);
+    } catch (e) {
+      console.warn('Gagal cek konflik:', e);
+    }
+  }, [session?.user?.id]);
+
+  // Eksekusi antrean sinkronisasi
   const triggerAutoSync = useCallback(async () => {
     const schoolId = session?.user?.id;
     if (!schoolId || !navigator.onLine || isSyncing) return;
@@ -163,29 +178,31 @@ export const App: React.FC = () => {
     try {
       const result = await processSyncQueue(supabase, schoolId);
       refreshQueueCount();
-      if (result.processedCount > 0) {
-        setSyncFeedback(`Berhasil menyinkronkan ${result.processedCount} data!`);
-        setTimeout(() => setSyncFeedback(''), 4000);
-        // Refresh data cloud terbaru
+      checkConflictCount();
+      if (result.processedCount > 0 || result.conflictCount > 0) {
+        setSyncFeedback(
+          `Selesai: ${result.processedCount} diterapkan${
+            result.conflictCount > 0 ? `, ${result.conflictCount} konflik ditemukan.` : '.'
+          }`
+        );
+        setTimeout(() => setSyncFeedback(''), 5000);
         await fetchAllData();
       }
     } catch (e: any) {
-      console.error('Sinkronisasi otomatis gagal:', e);
+      console.error('Sinkronisasi gagal:', e);
       setSyncFeedback('Sinkronisasi tertunda. Akan dicoba lagi otomatis.');
     } finally {
       setIsSyncing(false);
     }
-  }, [session?.user?.id, isSyncing, refreshQueueCount]);
+  }, [session?.user?.id, isSyncing, refreshQueueCount, checkConflictCount]);
 
-  // Listener PWA & Perubahan Koneksi
+  // Listener Service Worker PostMessage & Online status
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
       triggerAutoSync();
     };
-    const handleOffline = () => {
-      setIsOnline(false);
-    };
+    const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -195,69 +212,83 @@ export const App: React.FC = () => {
       setDeferredPrompt(e);
       setIsInstallable(true);
     };
-
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    // Tangkap pesan dari Service Worker Background Sync
+    const handleSWMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'SW_SYNC_SUCCESS') {
+        refreshQueueCount();
+        checkConflictCount();
+        fetchAllData();
+        setSyncFeedback(
+          `Background Sync tuntas: ${event.data.processed} diterapkan, ${event.data.conflicts} konflik.`
+        );
+        setTimeout(() => setSyncFeedback(''), 5000);
+      }
+    };
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleSWMessage);
+    }
 
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+      }
     };
-  }, [triggerAutoSync]);
+  }, [triggerAutoSync, refreshQueueCount, checkConflictCount]);
 
   const handleInstallApp = async () => {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsInstallable(false);
-    }
+    if (outcome === 'accepted') setIsInstallable(false);
     setDeferredPrompt(null);
   };
 
-  // Sesi Login
+  // Simpan JWT Session ke IndexedDB agar dapat digunakan Service Worker
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthChecking(false);
+      if (session?.access_token) {
+        setIDBValue('auth', 'supabase_jwt', session.access_token);
+      }
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (!session) {
-        setTeachers([]);
-        setClasses([]);
-        setSubjects([]);
-        setLessons([]);
-        setSchedules([]);
-        setSchoolProfile(null);
-        setPendingQueueCount(0);
+      if (session?.access_token) {
+        setIDBValue('auth', 'supabase_jwt', session.access_token);
+      } else {
+        setIDBValue('auth', 'supabase_jwt', null);
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  // Update Offline Cache Lokal
   const updateLocalOfflineCache = (schoolId: string, partialData: Record<string, any>) => {
     try {
       const cached = localStorage.getItem(`offline_cache_${schoolId}`);
       const current = cached ? JSON.parse(cached) : {};
-      const merged = { ...current, ...partialData };
-      localStorage.setItem(`offline_cache_${schoolId}`, JSON.stringify(merged));
+      localStorage.setItem(`offline_cache_${schoolId}`, JSON.stringify({ ...current, ...partialData }));
     } catch (e) {
-      console.error('Gagal memperbarui cache lokal:', e);
+      console.error('Gagal simpan offline cache:', e);
     }
   };
 
-  // Ambil Data (Online -> Cloud, Offline -> Cache)
   const fetchAllData = async () => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
 
     refreshQueueCount();
+    checkConflictCount();
 
     if (!navigator.onLine) {
       try {
@@ -275,7 +306,7 @@ export const App: React.FC = () => {
           if (parsed.schoolProfile) setSchoolProfile(parsed.schoolProfile);
         }
       } catch (err) {
-        console.error('Gagal membaca cache lokal offline:', err);
+        console.error('Gagal load cache offline:', err);
       }
       return;
     }
@@ -347,20 +378,7 @@ export const App: React.FC = () => {
         schoolProfile: profileRes.data || null,
       });
     } catch (err: any) {
-      console.error('Gagal mengambil data dari Supabase, memuat cache offline:', err.message);
-      const cached = localStorage.getItem(`offline_cache_${schoolId}`);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed.workDays) setWorkDays(parsed.workDays);
-        if (parsed.timeSlots) setTimeSlots(parsed.timeSlots);
-        if (parsed.teachers) setTeachers(parsed.teachers);
-        if (parsed.classes) setClasses(parsed.classes);
-        if (parsed.rooms) setRooms(parsed.rooms);
-        if (parsed.subjects) setSubjects(parsed.subjects);
-        if (parsed.lessons) setLessons(parsed.lessons);
-        if (parsed.schedules) setSchedules(parsed.schedules);
-        if (parsed.schoolProfile) setSchoolProfile(parsed.schoolProfile);
-      }
+      console.error('Gagal mengambil data, beralih ke cache:', err.message);
     }
   };
 
@@ -400,23 +418,8 @@ export const App: React.FC = () => {
       )
       .subscribe();
 
-    const schedulesChannel = supabase
-      .channel('realtime_schedules')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'schedules',
-          filter: `school_id=eq.${session.user.id}`,
-        },
-        () => fetchAllData()
-      )
-      .subscribe();
-
     return () => {
       supabase.removeChannel(jobsChannel);
-      supabase.removeChannel(schedulesChannel);
     };
   }, [session?.user?.id, isOnline]);
 
@@ -426,22 +429,12 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('afterprint', handleAfterPrint);
   }, []);
 
-  useEffect(() => {
-    if (filterMode === 'CLASS' && classes.length > 0) {
-      if (!classes.some((c) => c.id === selectedId)) setSelectedId(classes[0].id);
-    } else if (filterMode === 'TEACHER' && teachers.length > 0) {
-      if (!teachers.some((t) => t.id === selectedId)) setSelectedId(teachers[0].id);
-    }
-  }, [filterMode, classes, teachers]);
-
   const handleLogout = async () => {
     if (pendingQueueCount > 0) {
-      const confirmLogout = confirm(
-        `Perhatian: Masih ada ${pendingQueueCount} perubahan yang belum disinkronkan ke server. Jika Anda keluar sekarang, data lokal tetap aman tetapi belum masuk ke database sekolah. Lanjutkan keluar?`
-      );
-      if (!confirmLogout) return;
+      const ok = confirm(`Ada ${pendingQueueCount} data belum tersinkron. Keluar sekarang?`);
+      if (!ok) return;
     } else {
-      if (!confirm('Keluar dari sesi akun sekolah ini?')) return;
+      if (!confirm('Keluar dari akun sekolah?')) return;
     }
     await supabase.auth.signOut();
   };
@@ -463,67 +456,12 @@ export const App: React.FC = () => {
 
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
-
     if (teachers.length === 0) issues.push('Belum ada data Guru di Master Data.');
     if (classes.length === 0) issues.push('Belum ada data Kelas di Master Data.');
     if (subjects.length === 0) issues.push('Belum ada data Mata Pelajaran.');
     if (timeSlots.length === 0) issues.push('Slot Hari & Jam belum dikonfigurasi.');
     if (lessons.length === 0) issues.push('Belum ada Kartu Beban Mengajar yang dibuat.');
-
-    if (teachers.length > 0 && lessons.length > 0) {
-      const unassignedTeachers = teachers.filter(
-        (t) => !lessons.some((l) => l.teacher_id === t.id)
-      );
-      if (unassignedTeachers.length > 0) {
-        const names = unassignedTeachers.map((t) => t.full_name).slice(0, 2).join(', ');
-        const extra = unassignedTeachers.length > 2 ? ` (+${unassignedTeachers.length - 2} lainnya)` : '';
-        issues.push(`Guru belum memiliki penugasan jam: ${names}${extra}`);
-      }
-    }
-
-    if (classes.length > 0 && lessons.length > 0) {
-      const unassignedClasses = classes.filter(
-        (c) => !lessons.some((l) => l.class_id === c.id)
-      );
-      if (unassignedClasses.length > 0) {
-        const names = unassignedClasses.map((c) => c.class_name).slice(0, 3).join(', ');
-        const extra = unassignedClasses.length > 3 ? ` (+${unassignedClasses.length - 3} lainnya)` : '';
-        issues.push(`Kelas belum memiliki kartu pelajaran: ${names}${extra}`);
-      }
-    }
-
-    if (lessons.length > 0) {
-      const invalidLessons = lessons.filter((l) => {
-        if (!l.allowed_slot_types) return true;
-        const totalJP = Number(l.total_periods ?? l.total_periods_per_week ?? 0);
-        if (totalJP <= 0) return true;
-
-        const patternStr = Array.isArray(l.split_pattern)
-          ? l.split_pattern.join('+')
-          : String(l.split_pattern || '').trim();
-
-        if (!patternStr) return true;
-        const parts = patternStr
-          .split('+')
-          .map((s) => Number(s.trim()))
-          .filter((n) => !isNaN(n) && n > 0);
-
-        if (parts.length === 0) return true;
-        const sum = parts.reduce((a, b) => a + b, 0);
-        return sum !== totalJP;
-      });
-
-      if (invalidLessons.length > 0) {
-        issues.push(
-          `Ada ${invalidLessons.length} kartu beban mengajar yang pola pecah bloknya belum sesuai dengan total JP atau zona slotnya belum diatur.`
-        );
-      }
-    }
-
-    return {
-      isValid: issues.length === 0,
-      issues,
-    };
+    return { isValid: issues.length === 0, issues };
   }, [teachers, classes, subjects, timeSlots, lessons]);
 
   const handleAssignmentKeyChange = (key: string) => {
@@ -546,7 +484,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // 1. Simpan Kartu Beban Mengajar (Mendukung Offline & Online)
+  // Simpan Kartu Beban Mengajar (Menggunakan versioning OCC)
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     const schoolId = session?.user?.id;
@@ -563,9 +501,7 @@ export const App: React.FC = () => {
     const sum = parts.reduce((a, b) => a + b, 0);
 
     if (sum !== expectedTotalJP) {
-      alert(
-        `Total jam pada pola pecah blok (${parts.join('+')} = ${sum} JP) tidak cocok dengan beban mata pelajaran (${expectedTotalJP} JP)!`
-      );
+      alert(`Pola pecah blok (${parts.join('+')} = ${sum} JP) tidak cocok dengan beban (${expectedTotalJP} JP)!`);
       return;
     }
 
@@ -573,7 +509,7 @@ export const App: React.FC = () => {
     const cleanPatternString = parts.join('+');
 
     try {
-      // Pembaruan Optimistik State Lokal
+      // Optimistic local update
       const updatedLessons = lessons.map((l) => {
         if (configTargetClassIds.includes(l.class_id) && l.subject_id === sId) {
           return {
@@ -581,6 +517,7 @@ export const App: React.FC = () => {
             split_pattern: cleanPatternString,
             allowed_slot_types: configZone,
             preferred_room_id: configRoomId || null,
+            version: (l.version || 1) + 1,
           };
         }
         return l;
@@ -588,50 +525,34 @@ export const App: React.FC = () => {
       setLessons(updatedLessons);
       updateLocalOfflineCache(schoolId, { lessons: updatedLessons });
 
+      for (const classId of configTargetClassIds) {
+        const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
+        if (existing) {
+          enqueueSyncAction({
+            school_id: schoolId,
+            table: 'lessons',
+            operation: 'update',
+            matchColumn: 'id',
+            matchValue: existing.id,
+            expected_version: existing.version || 1, // OCC Versioning
+            payload: {
+              split_pattern: cleanPatternString,
+              allowed_slot_types: configZone,
+              preferred_room_id: configRoomId || null,
+            },
+            description: `Update Kartu Mapel (${existing.id})`,
+          });
+        }
+      }
+
+      refreshQueueCount();
       if (isOnline) {
-        // Simpan langsung ke Supabase jika Online
-        for (const classId of configTargetClassIds) {
-          const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
-          if (existing) {
-            const { error } = await supabase
-              .from('lessons')
-              .update({
-                split_pattern: cleanPatternString,
-                allowed_slot_types: configZone,
-                preferred_room_id: configRoomId || null,
-              })
-              .eq('id', existing.id);
-            if (error) throw error;
-          }
-        }
-        alert(`Berhasil memperbarui kartu beban mengajar untuk ${configTargetClassIds.length} kelas!`);
+        await triggerAutoSync();
       } else {
-        // Masukkan ke Antrean Sinkronisasi jika Offline
-        for (const classId of configTargetClassIds) {
-          const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
-          if (existing) {
-            enqueueSyncAction({
-              school_id: schoolId,
-              table: 'lessons',
-              operation: 'update',
-              matchColumn: 'id',
-              matchValue: existing.id,
-              payload: {
-                split_pattern: cleanPatternString,
-                allowed_slot_types: configZone,
-                preferred_room_id: configRoomId || null,
-              },
-              description: `Update Kartu Mapel (${existing.id})`,
-            });
-          }
-        }
-        refreshQueueCount();
-        alert(
-          `Tersimpan secara lokal (Offline)! Perubahan dimasukkan ke antrean dan otomatis diunggah saat kembali online.`
-        );
+        alert('Tersimpan secara lokal (Offline). Background Sync akan aktif saat kembali online!');
       }
     } catch (err: any) {
-      alert(`Gagal menyimpan pengaturan kartu: ${err.message}`);
+      alert(`Gagal menyimpan: ${err.message}`);
     } finally {
       setSavingCardConfig(false);
     }
@@ -641,42 +562,33 @@ export const App: React.FC = () => {
     const key = `${l.teacher_id}__${l.subject_id}`;
     setConfigAssignmentKey(key);
     setConfigTargetClassIds([l.class_id]);
-    setConfigSplitPattern(
-      Array.isArray(l.split_pattern) ? l.split_pattern.join('+') : String(l.split_pattern)
-    );
+    setConfigSplitPattern(Array.isArray(l.split_pattern) ? l.split_pattern.join('+') : String(l.split_pattern));
     setConfigZone((l.allowed_slot_types as any) || 'FORMAL');
     setConfigRoomId(l.preferred_room_id || '');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // 2. Hapus Kartu Pelajaran (Mendukung Offline & Online)
   const handleDeleteLesson = async (id: string) => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
     if (!confirm('Hapus kartu pelajaran ini?')) return;
 
-    // Pembaruan Optimistik Lokal
     const remaining = lessons.filter((l) => l.id !== id);
     setLessons(remaining);
     updateLocalOfflineCache(schoolId, { lessons: remaining });
 
-    if (isOnline) {
-      const { error } = await supabase.from('lessons').delete().eq('id', id);
-      if (error) console.error('Gagal menghapus online:', error);
-    } else {
-      enqueueSyncAction({
-        school_id: schoolId,
-        table: 'lessons',
-        operation: 'delete',
-        matchColumn: 'id',
-        matchValue: id,
-        description: `Hapus Kartu Pelajaran (${id})`,
-      });
-      refreshQueueCount();
-    }
+    enqueueSyncAction({
+      school_id: schoolId,
+      table: 'lessons',
+      operation: 'delete',
+      matchColumn: 'id',
+      matchValue: id,
+      description: `Hapus Kartu Pelajaran (${id})`,
+    });
+    refreshQueueCount();
+    if (isOnline) triggerAutoSync();
   };
 
-  // 3. Toggle Hari Aktif (Mendukung Offline & Online)
   const handleToggleDay = async (day: WorkDay) => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
@@ -686,20 +598,18 @@ export const App: React.FC = () => {
     setWorkDays(updated);
     updateLocalOfflineCache(schoolId, { workDays: updated });
 
-    if (isOnline) {
-      await supabase.from('work_days').update({ is_active: newActive }).eq('id', day.id);
-    } else {
-      enqueueSyncAction({
-        school_id: schoolId,
-        table: 'work_days',
-        operation: 'update',
-        matchColumn: 'id',
-        matchValue: day.id,
-        payload: { is_active: newActive },
-        description: `Ubah status hari ${day.day_name}`,
-      });
-      refreshQueueCount();
-    }
+    enqueueSyncAction({
+      school_id: schoolId,
+      table: 'work_days',
+      operation: 'update',
+      matchColumn: 'id',
+      matchValue: day.id,
+      expected_version: day.version || 1,
+      payload: { is_active: newActive },
+      description: `Ubah hari ${day.day_name}`,
+    });
+    refreshQueueCount();
+    if (isOnline) triggerAutoSync();
   };
 
   const handleToggleTargetDay = (dayIndex: number) => {
@@ -709,11 +619,9 @@ export const App: React.FC = () => {
   };
 
   const handleSelectAllActiveDays = () => {
-    const activeIndices = workDays.filter((d) => d.is_active).map((d) => d.day_index);
-    setTargetDayIndices(activeIndices);
+    setTargetDayIndices(workDays.filter((d) => d.is_active).map((d) => d.day_index));
   };
 
-  // 4. Simpan Slot Jam (Mendukung Offline & Online)
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
     const schoolId = session?.user?.id;
@@ -731,96 +639,71 @@ export const App: React.FC = () => {
     }));
 
     try {
-      // Pembaruan Optimistik State Lokal
       const existingFiltered = timeSlots.filter(
-        (s) =>
-          !targetDayIndices.includes(s.day_index) || s.period_number !== Number(slotPeriod)
+        (s) => !targetDayIndices.includes(s.day_index) || s.period_number !== Number(slotPeriod)
       );
       const newLocalSlots = [
         ...existingFiltered,
-        ...recordsToUpsert.map((r, i) => ({
-          ...r,
-          id: `local_slot_${r.day_index}_${r.period_number}_${i}`,
-        })),
+        ...recordsToUpsert.map((r, i) => ({ ...r, id: `local_slot_${r.day_index}_${r.period_number}_${i}` })),
       ] as TimeSlot[];
       setTimeSlots(newLocalSlots);
       updateLocalOfflineCache(schoolId, { timeSlots: newLocalSlots });
 
+      enqueueSyncAction({
+        school_id: schoolId,
+        table: 'time_slots',
+        operation: 'upsert',
+        matchColumn: 'school_id,day_index,period_number',
+        payload: recordsToUpsert,
+        description: `Simpan Slot ${slotName}`,
+      });
+
+      refreshQueueCount();
       if (isOnline) {
-        const { error } = await supabase
-          .from('time_slots')
-          .upsert(recordsToUpsert, { onConflict: 'school_id,day_index,period_number' });
-        if (error) throw error;
-        alert(`Berhasil menyimpan "${slotName}" untuk ${targetDayIndices.length} hari kerja!`);
+        await triggerAutoSync();
       } else {
-        enqueueSyncAction({
-          school_id: schoolId,
-          table: 'time_slots',
-          operation: 'upsert',
-          matchColumn: 'school_id,day_index,period_number',
-          payload: recordsToUpsert,
-          description: `Simpan Slot ${slotName} (${targetDayIndices.length} Hari)`,
-        });
-        refreshQueueCount();
-        alert(
-          `Slot waktu tersimpan secara lokal (Offline)! Akan otomatis diunggah ke database saat online.`
-        );
+        alert('Slot tersimpan offline & antrean sync terdaftar!');
       }
     } catch (err: any) {
-      alert(`Gagal menyimpan slot waktu: ${err.message}`);
+      alert(`Gagal: ${err.message}`);
     } finally {
       setSavingSlot(false);
     }
   };
 
-  // 5. Reset Slot Jam
   const handleResetAllSlots = async () => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
 
-    const konfirmasi = window.confirm(
-      'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran sekolah Anda yang saat ini terpasang di matriks.\n\nLanjutkan?'
-    );
-    if (!konfirmasi) return;
+    if (!confirm('Kosongkan semua slot jam dan jadwal?')) return;
 
     setSavingSlot(true);
     setTimeSlots([]);
     setSchedules([]);
     updateLocalOfflineCache(schoolId, { timeSlots: [], schedules: [] });
 
-    try {
-      if (isOnline) {
-        await supabase.from('schedules').delete().eq('school_id', schoolId);
-        await supabase.from('time_slots').delete().eq('school_id', schoolId);
-        alert('Semua slot jam dan jadwal berhasil dikosongkan!');
-      } else {
-        enqueueSyncAction({
-          school_id: schoolId,
-          table: 'schedules',
-          operation: 'delete',
-          matchColumn: 'school_id',
-          matchValue: schoolId,
-          description: 'Hapus seluruh jadwal pelajaran',
-        });
-        enqueueSyncAction({
-          school_id: schoolId,
-          table: 'time_slots',
-          operation: 'delete',
-          matchColumn: 'school_id',
-          matchValue: schoolId,
-          description: 'Hapus seluruh slot waktu',
-        });
-        refreshQueueCount();
-        alert('Slot jam dikosongkan secara lokal. Perintah hapus dimasukkan ke antrean sinkronisasi.');
-      }
-    } catch (err: any) {
-      alert(`Gagal mengosongkan slot jam: ${err.message}`);
-    } finally {
-      setSavingSlot(false);
-    }
+    enqueueSyncAction({
+      school_id: schoolId,
+      table: 'schedules',
+      operation: 'delete',
+      matchColumn: 'school_id',
+      matchValue: schoolId,
+      description: 'Hapus jadwal',
+    });
+    enqueueSyncAction({
+      school_id: schoolId,
+      table: 'time_slots',
+      operation: 'delete',
+      matchColumn: 'school_id',
+      matchValue: schoolId,
+      description: 'Hapus slot',
+    });
+
+    refreshQueueCount();
+    if (isOnline) triggerAutoSync();
+    setSavingSlot(false);
   };
 
-  // 6. Syarat Jam Guru (Mendukung Offline & Online)
   const handleAddConstraint = async (e: React.FormEvent) => {
     e.preventDefault();
     const schoolId = session?.user?.id;
@@ -829,52 +712,35 @@ export const App: React.FC = () => {
     setSavingConstraint(true);
     try {
       const teacher = teachers.find((t) => t.id === selectedTeacherId);
-      const currentRules = Array.isArray(teacher?.unavailable_slots)
-        ? [...teacher!.unavailable_slots]
-        : [];
-
+      const currentRules = Array.isArray(teacher?.unavailable_slots) ? [...teacher!.unavailable_slots] : [];
       const parsedPeriods =
         unavailPeriods.trim().toUpperCase() === 'ALL'
           ? 'ALL'
-          : unavailPeriods
-              .split(',')
-              .map((p) => Number(p.trim()))
-              .filter((n) => !isNaN(n) && n > 0);
+          : unavailPeriods.split(',').map((p) => Number(p.trim())).filter((n) => !isNaN(n) && n > 0);
 
-      currentRules.push({
-        day_index: Number(unavailDayIndex),
-        periods: parsedPeriods,
-        level: 'HARD',
-      });
+      currentRules.push({ day_index: Number(unavailDayIndex), periods: parsedPeriods, level: 'HARD' });
 
-      // Update Optimistik
       const updatedTeachers = teachers.map((t) =>
         t.id === selectedTeacherId ? { ...t, unavailable_slots: currentRules } : t
       );
       setTeachers(updatedTeachers);
       updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
 
-      if (isOnline) {
-        const { error } = await supabase
-          .from('teachers')
-          .update({ unavailable_slots: currentRules })
-          .eq('id', selectedTeacherId);
-        if (error) throw error;
-      } else {
-        enqueueSyncAction({
-          school_id: schoolId,
-          table: 'teachers',
-          operation: 'update',
-          matchColumn: 'id',
-          matchValue: selectedTeacherId,
-          payload: { unavailable_slots: currentRules },
-          description: `Update Syarat Jam Guru (${selectedTeacherId})`,
-        });
-        refreshQueueCount();
-        alert('Syarat jam tersimpan offline! Masuk antrean sinkronisasi.');
-      }
+      enqueueSyncAction({
+        school_id: schoolId,
+        table: 'teachers',
+        operation: 'update',
+        matchColumn: 'id',
+        matchValue: selectedTeacherId,
+        expected_version: teacher?.version || 1,
+        payload: { unavailable_slots: currentRules },
+        description: `Syarat jam guru (${selectedTeacherId})`,
+      });
+
+      refreshQueueCount();
+      if (isOnline) triggerAutoSync();
     } catch (err: any) {
-      alert(`Gagal menyimpan syarat jam guru: ${err.message}`);
+      alert(`Gagal: ${err.message}`);
     } finally {
       setSavingConstraint(false);
     }
@@ -884,69 +750,45 @@ export const App: React.FC = () => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
 
-    const updatedTeachers = teachers.map((t) =>
-      t.id === teacherId ? { ...t, unavailable_slots: [] } : t
-    );
+    const teacher = teachers.find((t) => t.id === teacherId);
+    const updatedTeachers = teachers.map((t) => (t.id === teacherId ? { ...t, unavailable_slots: [] } : t));
     setTeachers(updatedTeachers);
     updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
 
-    if (isOnline) {
-      await supabase.from('teachers').update({ unavailable_slots: [] }).eq('id', teacherId);
-    } else {
-      enqueueSyncAction({
-        school_id: schoolId,
-        table: 'teachers',
-        operation: 'update',
-        matchColumn: 'id',
-        matchValue: teacherId,
-        payload: { unavailable_slots: [] },
-        description: `Reset Syarat Jam Guru (${teacherId})`,
-      });
-      refreshQueueCount();
-    }
+    enqueueSyncAction({
+      school_id: schoolId,
+      table: 'teachers',
+      operation: 'update',
+      matchColumn: 'id',
+      matchValue: teacherId,
+      expected_version: teacher?.version || 1,
+      payload: { unavailable_slots: [] },
+      description: `Reset syarat jam (${teacherId})`,
+    });
+    refreshQueueCount();
+    if (isOnline) triggerAutoSync();
   };
 
-  // Pemicu Solver GitHub Actions (Memerlukan Akses Cloud / Online)
   const handleTriggerSolver = async () => {
     if (!isOnline) {
-      alert(
-        'Penyusunan jadwal otomatis menggunakan komputasi cloud Google OR-Tools di GitHub Actions. Sambungkan perangkat ke internet terlebih dahulu.'
-      );
+      alert('Solver Google OR-Tools membutuhkan koneksi internet aktif.');
       return;
     }
 
     if (pendingQueueCount > 0) {
-      alert(
-        `Masih terdapat ${pendingQueueCount} perubahan data lokal yang belum selesai disinkronkan ke cloud. Harap tekan tombol "Sinkronkan Sekarang" terlebih dahulu agar enjin solver menerima data terbaru.`
-      );
+      alert(`Ada ${pendingQueueCount} data belum tersinkron. Tekan tombol sinkronisasi terlebih dahulu.`);
       return;
     }
 
-    if (!validationStatus.isValid) {
-      const warningMessage =
-        'PERINGATAN: Pengaturan data belum lengkap:\n\n' +
-        validationStatus.issues.map((issue) => `• ${issue}`).join('\n') +
-        '\n\nMenyusun jadwal saat data belum lengkap dapat menyebabkan jadwal tidak optimal atau gagal memenuhi target jam.\n\nApakah Anda yakin tetap ingin melanjutkan proses generate jadwal otomatis?';
-
-      const proceedWithIncomplete = window.confirm(warningMessage);
-      if (!proceedWithIncomplete) return;
-    } else {
-      const proceedComplete = window.confirm(
-        'Seluruh data guru, rombel kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
-      );
-      if (!proceedComplete) return;
-    }
+    if (!confirm('Jalankan mesin solver jadwal di GitHub Actions?')) return;
 
     setIsGenerating(true);
-    setJobStatus({
-      status: 'queued',
-      message: 'Mendaftarkan job & menyalakan mesin GitHub Actions...',
-    });
+    setJobStatus({ status: 'queued', message: 'Mendaftarkan job ke GitHub Actions...' });
 
     try {
       await triggerScheduleGeneration();
     } catch (err: any) {
-      alert(`Gagal memicu GitHub Actions: ${err.message}`);
+      alert(`Gagal: ${err.message}`);
       setIsGenerating(false);
       setJobStatus({ status: 'failed', message: `Gagal: ${err.message}` });
     }
@@ -954,7 +796,7 @@ export const App: React.FC = () => {
 
   const handleExportExcel = () => {
     if (schedules.length === 0) {
-      alert('Belum ada jadwal yang terbentuk untuk diekspor.');
+      alert('Belum ada jadwal untuk diekspor.');
       return;
     }
 
@@ -964,8 +806,7 @@ export const App: React.FC = () => {
 
     classes.forEach((cls) => {
       const rows: any[] = [];
-      const headerRow = ['Jam Ke', ...activeDays.map((d) => d.day_name)];
-      rows.push(headerRow);
+      rows.push(['Jam Ke', ...activeDays.map((d) => d.day_name)]);
 
       uniquePeriods.forEach((period) => {
         const row = [`Jam ke-${period}`];
@@ -979,7 +820,6 @@ export const App: React.FC = () => {
             row.push(`ISTIRAHAT (${slot.slot_name})`);
             return;
           }
-
           const item = schedules.find((sc) => sc.time_slot_id === slot.id && sc.class_id === cls.id);
           if (item) {
             const lesson = lessons.find((l) => l.id === item.lesson_id);
@@ -1003,27 +843,14 @@ export const App: React.FC = () => {
 
   const handlePrintBatch = (mode: 'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS') => {
     setPrintMode(mode);
-    setTimeout(() => {
-      window.print();
-    }, 450);
+    setTimeout(() => window.print(), 450);
   };
-
-  const currentSingleTitle = useMemo(() => {
-    const prefix = schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : '';
-    if (filterMode === 'CLASS') {
-      const cls = classes.find((c) => c.id === selectedId);
-      return cls ? `${prefix}JADWAL KELAS ${cls.class_name.toUpperCase()}` : 'JADWAL PELAJARAN';
-    } else {
-      const tch = teachers.find((t) => t.id === selectedId);
-      return tch ? `${prefix}JADWAL MENGAJAR: ${tch.full_name.toUpperCase()}` : 'JADWAL MENGAJAR';
-    }
-  }, [filterMode, selectedId, classes, teachers, schoolProfile]);
 
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm gap-2">
         <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
-        <span>Memeriksa sesi autentikasi sekolah...</span>
+        <span>Memeriksa sesi autentikasi...</span>
       </div>
     );
   }
@@ -1034,108 +861,6 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-800">
-      <style>{`
-        @media print {
-          @page {
-            size: A4 landscape;
-            margin: 5mm 6mm;
-          }
-          html, body {
-            width: 100% !important;
-            height: auto !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            background: #ffffff !important;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-          }
-          header.app-navbar, nav, .print\\:hidden, button, .no-print {
-            display: none !important;
-          }
-          main {
-            padding: 0 !important;
-            margin: 0 !important;
-            max-width: none !important;
-            width: 100% !important;
-            display: block !important;
-          }
-          .print-sheet {
-            display: block !important;
-            width: 100% !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-            page-break-after: always !important;
-            break-after: page !important;
-          }
-          .print-sheet:last-child {
-            page-break-after: auto !important;
-            break-after: auto !important;
-          }
-          .sheet-header {
-            display: flex !important;
-            flex-direction: row !important;
-            align-items: center !important;
-            justify-content: space-between !important;
-            width: 100% !important;
-            height: auto !important;
-            max-height: 28px !important;
-            margin: 0 0 4px 0 !important;
-            padding: 0 0 3px 0 !important;
-            border-bottom: 1.5px solid #0f172a !important;
-          }
-          .sheet-header h2 {
-            font-size: 10pt !important;
-            font-weight: 800 !important;
-            margin: 0 !important;
-            color: #0f172a !important;
-          }
-          .sheet-header span {
-            font-size: 7.5pt !important;
-            color: #475569 !important;
-          }
-          .print-sheet div {
-            overflow: visible !important;
-            box-shadow: none !important;
-            max-height: none !important;
-          }
-          .print-sheet table {
-            width: 100% !important;
-            border-collapse: collapse !important;
-            table-layout: fixed !important;
-          }
-          .print-sheet tr {
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-          }
-          .print-sheet th {
-            background-color: #0f172a !important;
-            color: #ffffff !important;
-            font-size: 8pt !important;
-            font-weight: 700 !important;
-            padding: 3px 4px !important;
-            border: 1px solid #334155 !important;
-          }
-          .print-sheet td {
-            padding: 2px 3px !important;
-            border: 1px solid #cbd5e1 !important;
-            vertical-align: top !important;
-          }
-          .print-sheet td > div, .print-sheet [class*="min-h-"] {
-            min-height: 0 !important;
-            height: auto !important;
-            padding: 1.5px 3px !important;
-            margin: 0 !important;
-          }
-          .print-sheet td p, .print-sheet td span, .print-sheet td div {
-            font-size: 7.5pt !important;
-            line-height: 1.1 !important;
-          }
-        }
-      `}</style>
-
-      {/* HEADER NAVIGASI UTAMA */}
       <header className="app-navbar bg-white border-b border-slate-200 px-6 py-3 shadow-sm sticky top-0 z-40 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -1148,20 +873,28 @@ export const App: React.FC = () => {
                   {schoolProfile?.school_name || 'Smart Timetable CSP'}
                 </h1>
 
-                {/* Status Online / Offline */}
                 {isOnline ? (
                   <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                    <Wifi className="w-3 h-3 text-emerald-600" />
-                    <span>Online</span>
+                    <Wifi className="w-3 h-3 text-emerald-600" /> Online
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1">
-                    <WifiOff className="w-3 h-3 text-amber-600" />
-                    <span>Offline (Lokal)</span>
+                    <WifiOff className="w-3 h-3 text-amber-600" /> Offline
                   </span>
                 )}
 
-                {/* Indikator Antrean Sinkronisasi */}
+                {/* Indikator Konflik Data */}
+                {conflictCount > 0 && (
+                  <button
+                    onClick={() => setIsConflictModalOpen(true)}
+                    className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-rose-50 border border-rose-300 text-rose-700 flex items-center gap-1 animate-bounce"
+                  >
+                    <AlertTriangle className="w-3 h-3 text-rose-600" />
+                    <span>{conflictCount} Konflik Data</span>
+                  </button>
+                )}
+
+                {/* Indikator Antrean Sync */}
                 {pendingQueueCount > 0 && (
                   <button
                     onClick={triggerAutoSync}
@@ -1173,16 +906,13 @@ export const App: React.FC = () => {
                         ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 cursor-pointer animate-pulse'
                         : 'bg-slate-100 text-slate-600 border-slate-300'
                     }`}
-                    title="Klik untuk menyinkronkan data antrean sekarang"
                   >
                     {isSyncing ? (
                       <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
                     ) : (
                       <CloudUpload className="w-3 h-3 text-indigo-600" />
                     )}
-                    <span>
-                      {isSyncing ? 'Menyinkronkan...' : `${pendingQueueCount} Perubahan Belum Sinkron`}
-                    </span>
+                    <span>{isSyncing ? 'Menyinkronkan...' : `${pendingQueueCount} Antrean Sync`}</span>
                   </button>
                 )}
               </div>
@@ -1193,19 +923,16 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Tombol Install Aplikasi (PWA) */}
             {isInstallable && (
               <button
                 onClick={handleInstallApp}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-400 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition shadow-sm animate-pulse"
-                title="Tambahkan aplikasi ke layar utama HP/Tablet untuk tampilan Fullscreen"
               >
                 <Download className="w-4 h-4 text-indigo-600" />
                 <span>Install Aplikasi</span>
               </button>
             )}
 
-            {/* Tombol Panel Token: Khusus Admin */}
             {isAdmin && (
               <button
                 onClick={() => setIsAdminModalOpen(true)}
@@ -1215,7 +942,6 @@ export const App: React.FC = () => {
                     ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
                     : 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900'
                 }`}
-                title={!isOnline ? 'Hanya dapat diakses saat online' : 'Generate dan kelola token'}
               >
                 <KeyRound className="w-4 h-4 text-amber-600" />
                 <span>Panel Token</span>
@@ -1238,7 +964,6 @@ export const App: React.FC = () => {
                   ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
                   : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800'
               }`}
-              title={!isOnline ? 'Hanya dapat diakses saat online' : 'Import Excel'}
             >
               <Upload className="w-4 h-4 text-emerald-700" />
               <span>Import Excel</span>
@@ -1284,15 +1009,9 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
-            {/* Tombol Generate Jadwal: Membutuhkan Online */}
             <button
               onClick={handleTriggerSolver}
               disabled={isGenerating || !isOnline}
-              title={
-                !isOnline
-                  ? 'Sambungkan ke internet untuk menyusun jadwal otomatis di cloud'
-                  : 'Klik untuk membuat jadwal otomatis'
-              }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isGenerating
                   ? 'bg-slate-400 text-white cursor-not-allowed'
@@ -1317,7 +1036,6 @@ export const App: React.FC = () => {
             <button
               onClick={handleLogout}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition"
-              title="Keluar dari akun sekolah"
             >
               <LogOut className="w-4 h-4" />
               <span>Keluar</span>
@@ -1326,78 +1044,11 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* FEEDBACK STATUS SINKRONISASI */}
       {syncFeedback && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2 shadow-sm">
             <CloudUpload className="w-4 h-4 text-blue-600 shrink-0" />
             <span className="font-semibold">{syncFeedback}</span>
-          </div>
-        </div>
-      )}
-
-      {/* BANNER NOTIFIKASI MODE OFFLINE & ANTREAN */}
-      {!isOnline && (
-        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
-          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between shadow-sm">
-            <div className="flex items-center gap-2">
-              <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>
-                <strong>Mode Offline Aktif:</strong> Anda dapat melanjutkan pengaturan kartu mapel, hari & jam kerja, serta mencetak jadwal. Setiap perubahan disimpan ke antrean lokal ({pendingQueueCount} antrean) dan akan otomatis disinkronkan ke server begitu internet tersambung kembali.
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* BANNER STATUS KESIAPAN DATA (INFORMASIONAL) */}
-      {isOnline && !validationStatus.isValid && (
-        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
-          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
-            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <span className="font-bold">Pengaturan jadwal belum lengkap:</span>
-              <ul className="list-disc list-inside mt-1 space-y-0.5 text-amber-800 text-[11px]">
-                {validationStatus.issues.map((issue, idx) => (
-                  <li key={idx}>{issue}</li>
-                ))}
-              </ul>
-              <p className="mt-1.5 text-[11px] text-amber-700 italic">
-                * Anda tetap dapat menekan tombol "Generate Jadwal Otomatis" untuk melanjutkan jika diinginkan.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* BANNER STATUS SOLVER */}
-      {isOnline && jobStatus.status !== 'idle' && (
-        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
-          <div
-            className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs transition ${
-              jobStatus.status === 'processing' || jobStatus.status === 'queued'
-                ? 'bg-blue-50 border-blue-200 text-blue-900'
-                : jobStatus.status === 'completed'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : 'bg-rose-50 border-rose-200 text-rose-900'
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              {jobStatus.status === 'processing' || jobStatus.status === 'queued' ? (
-                <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
-              ) : jobStatus.status === 'completed' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-              )}
-              <span className="font-medium">{jobStatus.message}</span>
-              {jobStatus.elapsedMs && (
-                <span className="text-[11px] font-mono opacity-75">({jobStatus.elapsedMs} ms)</span>
-              )}
-            </div>
-            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-white/70 border border-current">
-              {jobStatus.status}
-            </span>
           </div>
         </div>
       )}
@@ -1487,10 +1138,6 @@ export const App: React.FC = () => {
         <div className="flex-1">
           {printMode === 'SINGLE' && (
             <div className="print-sheet">
-              <div className="sheet-header hidden print:flex">
-                <h2>{currentSingleTitle}</h2>
-                <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
-              </div>
               <TimetableGrid
                 workDays={workDays}
                 timeSlots={timeSlots}
@@ -1511,13 +1158,6 @@ export const App: React.FC = () => {
             <div>
               {classes.map((cls) => (
                 <div key={cls.id} className="print-sheet">
-                  <div className="sheet-header">
-                    <h2>
-                      {schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : ''}
-                      JADWAL PELAJARAN KELAS {cls.class_name.toUpperCase()}
-                    </h2>
-                    <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
-                  </div>
                   <TimetableGrid
                     workDays={workDays}
                     timeSlots={timeSlots}
@@ -1539,13 +1179,6 @@ export const App: React.FC = () => {
             <div>
               {teachers.map((tch) => (
                 <div key={tch.id} className="print-sheet">
-                  <div className="sheet-header">
-                    <h2>
-                      {schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : ''}
-                      JADWAL MENGAJAR: {tch.full_name.toUpperCase()} ({tch.teacher_code})
-                    </h2>
-                    <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
-                  </div>
                   <TimetableGrid
                     workDays={workDays}
                     timeSlots={timeSlots}
@@ -1565,10 +1198,21 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL ADMIN TOKEN */}
-      {isAdmin && (
-        <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />
+      {/* MODAL RESOLVER KONFLIK DATA */}
+      {session?.user?.id && (
+        <ConflictResolverModal
+          isOpen={isConflictModalOpen}
+          onClose={() => setIsConflictModalOpen(false)}
+          schoolId={session.user.id}
+          onResolved={() => {
+            checkConflictCount();
+            fetchAllData();
+          }}
+        />
       )}
+
+      {/* MODAL ADMIN TOKEN */}
+      {isAdmin && <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />}
 
       {/* MODAL MASTER DATA */}
       <MasterDataModal
@@ -1582,11 +1226,7 @@ export const App: React.FC = () => {
       />
 
       {/* MODAL IMPORT EXCEL */}
-      <ExcelImportModal
-        isOpen={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
-        onDataImported={fetchAllData}
-      />
+      <ExcelImportModal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} onDataImported={fetchAllData} />
 
       {/* MODAL PENUGASAN GURU */}
       <AssignmentModal
@@ -1604,219 +1244,133 @@ export const App: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b pb-3">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Pengaturan Kartu Beban Mengajar (Lesson Cards)
-                </h2>
-                <p className="text-slate-400 text-[11px] mt-0.5">
-                  Atur Pola Pecah Blok (Split), Zona Slot, dan Ruangan Khusus untuk beberapa kelas sekaligus
-                </p>
-              </div>
+              <h2 className="text-base font-bold text-slate-900">Pengaturan Kartu Beban Mengajar</h2>
               <button onClick={() => setIsLessonModalOpen(false)}>
                 <X className="w-5 h-5 text-slate-400 hover:text-slate-700" />
               </button>
             </div>
 
-            {lessons.length === 0 ? (
-              <div className="p-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300">
-                <UserCheck className="w-10 h-10 text-slate-400 mx-auto mb-2" />
-                <p className="font-bold text-slate-700">Belum Ada Penugasan Mengajar</p>
-                <p className="text-[11px] text-slate-500 mt-1 mb-4">
-                  Buka menu "Penugasan Guru" terlebih dahulu untuk menentukan guru, mapel, kelas, dan jumlah JP.
-                </p>
-                <button
-                  onClick={() => {
-                    setIsLessonModalOpen(false);
-                    setIsAssignmentModalOpen(true);
-                  }}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg"
+            <form onSubmit={handleSaveCardConfig} className="p-4 bg-slate-50 rounded-xl border space-y-3.5">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Pilih Penugasan Guru & Mapel:</label>
+                <select
+                  value={configAssignmentKey}
+                  onChange={(e) => handleAssignmentKeyChange(e.target.value)}
+                  className="w-full p-2 border rounded-lg bg-white font-semibold"
                 >
-                  Buka Menu Penugasan Guru
-                </button>
+                  {uniqueSubjectTeacherPairs.map((pair) => {
+                    const sub = subjects.find((s) => s.id === pair.subjectId);
+                    const tch = teachers.find((t) => t.id === pair.teacherId);
+                    return (
+                      <option key={pair.key} value={pair.key}>
+                        {sub?.subject_name} — {tch?.full_name} ({pair.totalPeriods} JP)
+                      </option>
+                    );
+                  })}
+                </select>
               </div>
-            ) : (
-              <form onSubmit={handleSaveCardConfig} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3.5">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Pilih Penugasan Guru & Mata Pelajaran:
-                  </label>
-                  <select
-                    value={configAssignmentKey}
-                    onChange={(e) => handleAssignmentKeyChange(e.target.value)}
-                    className="w-full p-2 border rounded-lg bg-white font-semibold text-slate-800"
-                  >
-                    {uniqueSubjectTeacherPairs.map((pair) => {
-                      const sub = subjects.find((s) => s.id === pair.subjectId);
-                      const tch = teachers.find((t) => t.id === pair.teacherId);
+
+              <div className="pt-2 border-t">
+                <label className="block font-bold text-slate-700 mb-2">Terapkan ke Kelas:</label>
+                <div className="flex flex-wrap gap-2">
+                  {(() => {
+                    const [tId, sId] = configAssignmentKey.split('__');
+                    const available = lessons
+                      .filter((l) => l.teacher_id === tId && l.subject_id === sId)
+                      .map((l) => classes.find((c) => c.id === l.class_id))
+                      .filter(Boolean) as ClassRoom[];
+
+                    return available.map((cls) => {
+                      const isChecked = configTargetClassIds.includes(cls.id);
                       return (
-                        <option key={pair.key} value={pair.key}>
-                          {sub?.subject_name} — {tch?.full_name} ({pair.totalPeriods} JP / Minggu)
-                        </option>
+                        <button
+                          key={cls.id}
+                          type="button"
+                          onClick={() =>
+                            setConfigTargetClassIds((prev) =>
+                              prev.includes(cls.id) ? prev.filter((id) => id !== cls.id) : [...prev, cls.id]
+                            )
+                          }
+                          className={`px-3 py-1.5 rounded-lg font-bold border transition flex items-center gap-1.5 ${
+                            isChecked
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : 'bg-white text-slate-600 border-slate-300'
+                          }`}
+                        >
+                          {isChecked ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5 opacity-50" />}
+                          <span>Kelas {cls.class_name}</span>
+                        </button>
                       );
-                    })}
+                    });
+                  })()}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Pola Pecah Blok</label>
+                  <input
+                    type="text"
+                    value={configSplitPattern}
+                    onChange={(e) => setConfigSplitPattern(e.target.value)}
+                    className="w-full p-2 border rounded-lg bg-white font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Zona Slot</label>
+                  <select
+                    value={configZone}
+                    onChange={(e) => setConfigZone(e.target.value as any)}
+                    className="w-full p-2 border rounded-lg bg-white"
+                  >
+                    <option value="FORMAL">FORMAL</option>
+                    <option value="PRE">PRE</option>
+                    <option value="POST">POST</option>
                   </select>
                 </div>
-
-                <div className="pt-2 border-t border-slate-200">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block font-bold text-slate-700">Terapkan Pengaturan ke Kelas:</label>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const [tId, sId] = configAssignmentKey.split('__');
-                          const matched = lessons.filter((l) => l.teacher_id === tId && l.subject_id === sId);
-                          setConfigTargetClassIds(matched.map((l) => l.class_id));
-                        }}
-                        className="text-[11px] text-indigo-600 hover:underline font-semibold"
-                      >
-                        Pilih Semua Kelas Terkait
-                      </button>
-                      <span className="text-slate-300">|</span>
-                      <button
-                        type="button"
-                        onClick={() => setConfigTargetClassIds([])}
-                        className="text-[11px] text-rose-600 hover:underline font-semibold"
-                      >
-                        Kosongkan
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {(() => {
-                      const [tId, sId] = configAssignmentKey.split('__');
-                      const availableClassesForPair = lessons
-                        .filter((l) => l.teacher_id === tId && l.subject_id === sId)
-                        .map((l) => classes.find((c) => c.id === l.class_id))
-                        .filter(Boolean) as ClassRoom[];
-
-                      return availableClassesForPair.map((cls) => {
-                        const isChecked = configTargetClassIds.includes(cls.id);
-                        return (
-                          <button
-                            key={cls.id}
-                            type="button"
-                            onClick={() => {
-                              setConfigTargetClassIds((prev) =>
-                                prev.includes(cls.id) ? prev.filter((id) => id !== cls.id) : [...prev, cls.id]
-                              );
-                            }}
-                            className={`px-3 py-1.5 rounded-lg font-bold border transition flex items-center gap-1.5 ${
-                              isChecked
-                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
-                            }`}
-                          >
-                            {isChecked ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5 opacity-50" />}
-                            <span>Kelas {cls.class_name}</span>
-                          </button>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-200">
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">Pola Pecah Blok (Split)</label>
-                    <input
-                      type="text"
-                      value={configSplitPattern}
-                      onChange={(e) => setConfigSplitPattern(e.target.value)}
-                      placeholder="Contoh: 2+2 atau 3"
-                      className="w-full p-2 border rounded-lg bg-white font-mono font-bold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">Zona Slot Diizinkan</label>
-                    <select
-                      value={configZone}
-                      onChange={(e) => setConfigZone(e.target.value as any)}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    >
-                      <option value="FORMAL">FORMAL (KBM Utama)</option>
-                      <option value="PRE">PRE (Pra-KBM / Pagi)</option>
-                      <option value="POST">POST (Sore / Ekskul)</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">Ruangan Khusus</label>
-                    <select
-                      value={configRoomId}
-                      onChange={(e) => setConfigRoomId(e.target.value)}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    >
-                      <option value="">-- Ruang Kelas Reguler --</option>
-                      {rooms.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.room_name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    type="submit"
-                    disabled={savingCardConfig || configTargetClassIds.length === 0}
-                    className={`px-5 py-2 rounded-lg text-white font-bold transition flex items-center gap-1.5 ${
-                      savingCardConfig || configTargetClassIds.length === 0
-                        ? 'bg-slate-300 cursor-not-allowed'
-                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
-                    }`}
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Ruangan Khusus</label>
+                  <select
+                    value={configRoomId}
+                    onChange={(e) => setConfigRoomId(e.target.value)}
+                    className="w-full p-2 border rounded-lg bg-white"
                   >
-                    <Check className="w-4 h-4" />
-                    <span>Terapkan Pengaturan ({configTargetClassIds.length} Kelas Terpilih)</span>
-                  </button>
+                    <option value="">-- Reguler --</option>
+                    {rooms.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.room_name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              </form>
-            )}
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="submit"
+                  disabled={savingCardConfig || configTargetClassIds.length === 0}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition"
+                >
+                  Terapkan Pengaturan ({configTargetClassIds.length} Kelas)
+                </button>
+              </div>
+            </form>
 
             <div className="border-t pt-3 overflow-y-auto flex-1 space-y-1.5">
-              <p className="font-bold text-slate-600 mb-1">
-                Daftar Kartu Beban Mengajar Terdaftar ({lessons.length})
-              </p>
               {lessons.map((l) => {
                 const tch = teachers.find((t) => t.id === l.teacher_id);
                 const sub = subjects.find((s) => s.id === l.subject_id);
                 const cls = classes.find((c) => c.id === l.class_id);
-                const rm = rooms.find((r) => r.id === l.preferred_room_id);
                 return (
-                  <div
-                    key={l.id}
-                    className="p-2.5 bg-slate-50 border rounded-lg flex items-center justify-between hover:bg-slate-100/70 transition"
-                  >
+                  <div key={l.id} className="p-2.5 bg-slate-50 border rounded-lg flex items-center justify-between">
                     <div>
-                      <span className="font-bold text-indigo-900">{sub?.subject_name}</span> —{' '}
-                      <span className="font-semibold text-slate-800">Kelas {cls?.class_name}</span> ({tch?.full_name})
-                      {rm && (
-                        <span className="ml-1.5 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] font-semibold">
-                          [{rm.room_name}]
-                        </span>
-                      )}
-                      <span className="ml-2 px-1.5 py-0.5 bg-indigo-100 text-indigo-800 rounded text-[10px] font-mono">
-                        {l.total_periods ?? l.total_periods_per_week ?? 0} JP (
-                        {Array.isArray(l.split_pattern) ? l.split_pattern.join('+') : l.split_pattern})
-                      </span>
-                      <span className="ml-1.5 px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px] font-bold">
-                        {l.allowed_slot_types}
-                      </span>
+                      <span className="font-bold text-indigo-900">{sub?.subject_name}</span> — Kelas {cls?.class_name} ({tch?.full_name})
                     </div>
                     <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleEditSingleLesson(l)}
-                        className="text-slate-400 hover:text-amber-600 p-1"
-                      >
+                      <button onClick={() => handleEditSingleLesson(l)} className="text-slate-400 hover:text-amber-600 p-1">
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        onClick={() => handleDeleteLesson(l.id)}
-                        className="text-slate-400 hover:text-rose-600 p-1"
-                      >
+                      <button onClick={() => handleDeleteLesson(l.id)} className="text-slate-400 hover:text-rose-600 p-1">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -1833,14 +1387,7 @@ export const App: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden p-6 space-y-5 text-xs">
             <div className="flex items-center justify-between border-b pb-3">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Konfigurasi Hari Kerja & Slot Jam (Pre / Formal / Post)
-                </h2>
-                <p className="text-slate-400 text-[11px] mt-0.5">
-                  Atur hari aktif sekolah dan terapkan slot waktu ke beberapa hari sekaligus
-                </p>
-              </div>
+              <h2 className="text-base font-bold text-slate-900">Konfigurasi Hari Kerja & Slot Jam</h2>
               <button onClick={() => setIsSlotModalOpen(false)}>
                 <X className="w-5 h-5 text-slate-400 hover:text-slate-700" />
               </button>
@@ -1855,9 +1402,7 @@ export const App: React.FC = () => {
                     type="button"
                     onClick={() => handleToggleDay(d)}
                     className={`px-3 py-1.5 rounded-lg font-bold border transition ${
-                      d.is_active
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-slate-100 text-slate-400 border-slate-200'
+                      d.is_active ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 text-slate-400'
                     }`}
                   >
                     {d.day_name}
@@ -1867,28 +1412,13 @@ export const App: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveSlot} className="space-y-3.5 border-t pt-4">
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+              <div className="p-3 bg-slate-50 rounded-xl border space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="block font-bold text-slate-700">Terapkan Slot Ini ke Hari:</label>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={handleSelectAllActiveDays}
-                      className="text-[11px] text-indigo-600 hover:underline font-semibold"
-                    >
-                      Pilih Semua Hari Aktif
-                    </button>
-                    <span className="text-slate-300">|</span>
-                    <button
-                      type="button"
-                      onClick={() => setTargetDayIndices([])}
-                      className="text-[11px] text-rose-600 hover:underline font-semibold"
-                    >
-                      Kosongkan
-                    </button>
-                  </div>
+                  <label className="block font-bold text-slate-700">Terapkan ke Hari:</label>
+                  <button type="button" onClick={handleSelectAllActiveDays} className="text-indigo-600 font-semibold text-[11px]">
+                    Pilih Semua Hari Aktif
+                  </button>
                 </div>
-
                 <div className="flex flex-wrap gap-2 pt-1">
                   {workDays
                     .filter((d) => d.is_active)
@@ -1899,14 +1429,11 @@ export const App: React.FC = () => {
                           key={d.id}
                           type="button"
                           onClick={() => handleToggleTargetDay(d.day_index)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 ${
-                            isSelected
-                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                              : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition ${
+                            isSelected ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600'
                           }`}
                         >
-                          <span>{d.day_name}</span>
-                          {isSelected && <Check className="w-3.5 h-3.5" />}
+                          {d.day_name}
                         </button>
                       );
                     })}
@@ -1918,24 +1445,18 @@ export const App: React.FC = () => {
                   <label className="block font-semibold mb-1">Periode Ke-</label>
                   <input
                     type="number"
-                    min={0}
-                    max={16}
                     value={slotPeriod}
                     onChange={(e) => setSlotPeriod(Number(e.target.value))}
                     className="w-full p-2 border rounded-lg bg-white"
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold mb-1">Tipe Zona Waktu</label>
-                  <select
-                    value={slotType}
-                    onChange={(e) => setSlotType(e.target.value as any)}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  >
-                    <option value="FORMAL">FORMAL (KBM Inti)</option>
-                    <option value="PRE">PRE (Pra-KBM / Pagi)</option>
-                    <option value="POST">POST (Ekskul / Sore)</option>
-                    <option value="BREAK">BREAK (Istirahat)</option>
+                  <label className="block font-semibold mb-1">Zona Waktu</label>
+                  <select value={slotType} onChange={(e) => setSlotType(e.target.value as any)} className="w-full p-2 border rounded-lg bg-white">
+                    <option value="FORMAL">FORMAL</option>
+                    <option value="PRE">PRE</option>
+                    <option value="POST">POST</option>
+                    <option value="BREAK">BREAK</option>
                   </select>
                 </div>
               </div>
@@ -1946,7 +1467,6 @@ export const App: React.FC = () => {
                   type="text"
                   value={slotName}
                   onChange={(e) => setSlotName(e.target.value)}
-                  placeholder="Contoh: Jam ke-1 / Istirahat Siang"
                   className="w-full p-2 border rounded-lg bg-white"
                 />
               </div>
@@ -1954,55 +1474,30 @@ export const App: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold mb-1">Jam Mulai</label>
-                  <input
-                    type="time"
-                    value={slotStart}
-                    onChange={(e) => setSlotStart(e.target.value)}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  />
+                  <input type="time" value={slotStart} onChange={(e) => setSlotStart(e.target.value)} className="w-full p-2 border rounded-lg bg-white" />
                 </div>
                 <div>
                   <label className="block font-semibold mb-1">Jam Selesai</label>
-                  <input
-                    type="time"
-                    value={slotEnd}
-                    onChange={(e) => setSlotEnd(e.target.value)}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  />
+                  <input type="time" value={slotEnd} onChange={(e) => setSlotEnd(e.target.value)} className="w-full p-2 border rounded-lg bg-white" />
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t">
+              <div className="flex items-center justify-between gap-2 pt-3 border-t">
                 <button
                   type="button"
                   onClick={handleResetAllSlots}
                   disabled={savingSlot}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-xs transition disabled:opacity-50"
+                  className="px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 font-bold rounded-lg text-xs"
                 >
-                  <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-                  <span>Kosongkan Semua Slot Jam</span>
+                  Kosongkan Semua Slot
                 </button>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsSlotModalOpen(false)}
-                    className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 font-semibold text-slate-700"
-                  >
-                    Tutup
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={savingSlot || targetDayIndices.length === 0}
-                    className={`px-5 py-2 rounded-lg text-white font-bold transition ${
-                      savingSlot || targetDayIndices.length === 0
-                        ? 'bg-slate-300 cursor-not-allowed'
-                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
-                    }`}
-                  >
-                    {savingSlot ? 'Menyimpan...' : `Simpan Slot Waktu (${targetDayIndices.length} Hari Terpilih)`}
-                  </button>
-                </div>
+                <button
+                  type="submit"
+                  disabled={savingSlot || targetDayIndices.length === 0}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg"
+                >
+                  Simpan Slot
+                </button>
               </div>
             </form>
           </div>
@@ -2014,9 +1509,7 @@ export const App: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden p-6 space-y-4 text-xs">
             <div className="flex items-center justify-between border-b pb-3">
-              <h2 className="text-base font-bold text-slate-900">
-                Pengaturan Jam Berhalangan Guru (Hard Constraint)
-              </h2>
+              <h2 className="text-base font-bold text-slate-900">Pengaturan Jam Berhalangan Guru</h2>
               <button onClick={() => setIsConstraintModalOpen(false)}>
                 <X className="w-5 h-5 text-slate-400 hover:text-slate-700" />
               </button>
@@ -2025,11 +1518,7 @@ export const App: React.FC = () => {
             <form onSubmit={handleAddConstraint} className="space-y-3">
               <div>
                 <label className="block font-semibold mb-1">Pilih Guru</label>
-                <select
-                  value={selectedTeacherId}
-                  onChange={(e) => setSelectedTeacherId(e.target.value)}
-                  className="w-full p-2 border rounded-lg bg-white"
-                >
+                <select value={selectedTeacherId} onChange={(e) => setSelectedTeacherId(e.target.value)} className="w-full p-2 border rounded-lg bg-white">
                   {teachers.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.full_name} ({t.teacher_code})
@@ -2041,38 +1530,22 @@ export const App: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold mb-1">Hari Berhalangan</label>
-                  <select
-                    value={unavailDayIndex}
-                    onChange={(e) => setUnavailDayIndex(Number(e.target.value))}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  >
-                    {workDays
-                      .filter((d) => d.is_active)
-                      .map((d) => (
-                        <option key={d.id} value={d.day_index}>
-                          {d.day_name}
-                        </option>
-                      ))}
+                  <select value={unavailDayIndex} onChange={(e) => setUnavailDayIndex(Number(e.target.value))} className="w-full p-2 border rounded-lg bg-white">
+                    {workDays.filter((d) => d.is_active).map((d) => (
+                      <option key={d.id} value={d.day_index}>
+                        {d.day_name}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
-                  <label className="block font-semibold mb-1">Jam Ke (Ketik ALL atau pisah koma: 1,2)</label>
-                  <input
-                    type="text"
-                    value={unavailPeriods}
-                    onChange={(e) => setUnavailPeriods(e.target.value)}
-                    placeholder="ALL atau 1,2,3"
-                    className="w-full p-2 border rounded-lg"
-                  />
+                  <label className="block font-semibold mb-1">Jam Ke (ALL atau 1,2)</label>
+                  <input type="text" value={unavailPeriods} onChange={(e) => setUnavailPeriods(e.target.value)} className="w-full p-2 border rounded-lg" />
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={savingConstraint}
-                className="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold"
-              >
-                {savingConstraint ? 'Menyimpan...' : '+ Tambah Larangan Jam Mengajar'}
+              <button type="submit" disabled={savingConstraint} className="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold">
+                Tambah Larangan Jam
               </button>
             </form>
 
@@ -2085,10 +1558,7 @@ export const App: React.FC = () => {
                       <p className="font-bold text-slate-800">{t.full_name}</p>
                       <p className="text-[11px] text-slate-500">{JSON.stringify(t.unavailable_slots)}</p>
                     </div>
-                    <button
-                      onClick={() => handleClearConstraint(t.id)}
-                      className="text-rose-600 hover:underline font-semibold"
-                    >
+                    <button onClick={() => handleClearConstraint(t.id)} className="text-rose-600 hover:underline font-semibold">
                       Reset
                     </button>
                   </div>
