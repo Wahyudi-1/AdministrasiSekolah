@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Calendar,
   Clock,
@@ -11,6 +11,7 @@ import {
   Upload,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Loader2,
   ShieldAlert,
   X,
@@ -21,6 +22,7 @@ import {
   Layers,
   CheckSquare,
   Square,
+  Lock,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabaseClient';
@@ -194,7 +196,7 @@ export const App: React.FC = () => {
   }, [filterMode, classes, teachers]);
 
   // Kelompokkan penugasan berdasarkan kombinasi (Guru + Mapel)
-  const uniqueSubjectTeacherPairs = React.useMemo(() => {
+  const uniqueSubjectTeacherPairs = useMemo(() => {
     const map = new Map<string, { teacherId: string; subjectId: string; totalPeriods: number }>();
     lessons.forEach((l) => {
       const key = `${l.teacher_id}__${l.subject_id}`;
@@ -209,7 +211,84 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // Saat pilihan penugasan berganti di modal Kartu Mapel, pilih semua kelas terkait secara default
+  // =========================================================================
+  // LOGIKA VALIDASI KESIAPAN GENERASI JADWAL
+  // =========================================================================
+  const validationStatus = useMemo(() => {
+    const issues: string[] = [];
+
+    // 1. Cek Data Master
+    if (teachers.length === 0) issues.push('Belum ada data Guru di Master Data.');
+    if (classes.length === 0) issues.push('Belum ada data Kelas di Master Data.');
+    if (subjects.length === 0) issues.push('Belum ada data Mata Pelajaran.');
+    if (timeSlots.length === 0) issues.push('Slot Hari & Jam belum dikonfigurasi.');
+    if (lessons.length === 0) issues.push('Belum ada Kartu Beban Mengajar yang dibuat.');
+
+    // 2. Cek apakah seluruh guru di master data sudah ditugaskan
+    if (teachers.length > 0 && lessons.length > 0) {
+      const unassignedTeachers = teachers.filter(
+        (t) => !lessons.some((l) => l.teacher_id === t.id)
+      );
+      if (unassignedTeachers.length > 0) {
+        const names = unassignedTeachers.map((t) => t.full_name).slice(0, 2).join(', ');
+        const extra = unassignedTeachers.length > 2 ? ` (+${unassignedTeachers.length - 2} lainnya)` : '';
+        issues.push(`Guru belum memiliki penugasan jam: ${names}${extra}`);
+      }
+    }
+
+    // 3. Cek apakah seluruh kelas sudah memiliki pelajaran
+    if (classes.length > 0 && lessons.length > 0) {
+      const unassignedClasses = classes.filter(
+        (c) => !lessons.some((l) => l.class_id === c.id)
+      );
+      if (unassignedClasses.length > 0) {
+        const names = unassignedClasses.map((c) => c.class_name).slice(0, 3).join(', ');
+        const extra = unassignedClasses.length > 3 ? ` (+${unassignedClasses.length - 3} lainnya)` : '';
+        issues.push(`Kelas belum memiliki kartu pelajaran: ${names}${extra}`);
+      }
+    }
+
+    // 4. Cek kelengkapan pola pecah blok dan zona slot pada setiap kartu pelajaran
+    if (lessons.length > 0) {
+      const invalidLessons = lessons.filter((l) => {
+        // Harus ada zona slot
+        if (!l.allowed_slot_types) return true;
+
+        const totalJP = Number(l.total_periods ?? l.total_periods_per_week ?? 0);
+        if (totalJP <= 0) return true;
+
+        const patternStr = Array.isArray(l.split_pattern)
+          ? l.split_pattern.join('+')
+          : String(l.split_pattern || '').trim();
+
+        if (!patternStr) return true;
+
+        const parts = patternStr
+          .split('+')
+          .map((s) => Number(s.trim()))
+          .filter((n) => !isNaN(n) && n > 0);
+
+        if (parts.length === 0) return true;
+
+        // Penjumlahan pola blok wajib sama dengan total JP kartu tersebut
+        const sum = parts.reduce((a, b) => a + b, 0);
+        return sum !== totalJP;
+      });
+
+      if (invalidLessons.length > 0) {
+        issues.push(
+          `Ada ${invalidLessons.length} kartu beban mengajar yang pola pecah bloknya belum sesuai dengan total JP atau zona slotnya belum diatur.`
+        );
+      }
+    }
+
+    return {
+      isValid: issues.length === 0,
+      issues,
+    };
+  }, [teachers, classes, subjects, timeSlots, lessons]);
+
+  // Saat pilihan penugasan berganti di modal Kartu Mapel
   const handleAssignmentKeyChange = (key: string) => {
     setConfigAssignmentKey(key);
     if (!key) {
@@ -246,7 +325,6 @@ export const App: React.FC = () => {
     const targetPair = uniqueSubjectTeacherPairs.find((p) => p.key === configAssignmentKey);
     const expectedTotalJP = targetPair?.totalPeriods || 4;
 
-    // Validasi Matematika: Pola Pecah Blok Wajib Sesuai Total JP
     const parts = configSplitPattern
       .split('+')
       .map((s) => Number(s.trim()))
@@ -262,7 +340,6 @@ export const App: React.FC = () => {
 
     setSavingCardConfig(true);
     try {
-      const splitArray = parts;
       const cleanPatternString = parts.join('+');
 
       for (const classId of configTargetClassIds) {
@@ -307,7 +384,7 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
-  // Toggle Hari Aktif di Sekolah
+  // Toggle Hari Aktif
   const handleToggleDay = async (day: WorkDay) => {
     const { error } = await supabase
       .from('work_days')
@@ -316,7 +393,6 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
-  // Toggle Pilihan Hari Target untuk Slot Jam
   const handleToggleTargetDay = (dayIndex: number) => {
     setTargetDayIndices((prev) =>
       prev.includes(dayIndex) ? prev.filter((d) => d !== dayIndex) : [...prev, dayIndex]
@@ -328,7 +404,7 @@ export const App: React.FC = () => {
     setTargetDayIndices(activeIndices);
   };
 
-  // Simpan Slot Waktu Massal
+  // Simpan Slot Waktu
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
     if (targetDayIndices.length === 0) {
@@ -361,7 +437,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Reset / Hapus Seluruh Slot Waktu
+  // Reset Semua Slot
   const handleResetAllSlots = async () => {
     const konfirmasi = window.confirm(
       'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran yang saat ini terpasang di matriks.\n\nApakah Anda yakin ingin mengosongkan semua slot waktu?'
@@ -435,14 +511,19 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
-  // Solver Trigger
+  // Pemicu Solver GitHub Actions dengan Proteksi Validasi
   const handleTriggerSolver = async () => {
-    if (lessons.length === 0 || timeSlots.length === 0) {
-      alert('Kartu mapel atau slot waktu masih kosong. Masukkan data terlebih dahulu.');
+    if (!validationStatus.isValid) {
+      alert(
+        'Belum dapat menyusun jadwal otomatis!\n\nLengkapi data berikut terlebih dahulu:\n• ' +
+          validationStatus.issues.join('\n• ')
+      );
       return;
     }
 
-    if (!confirm('Jalankan mesin OR-Tools di GitHub Actions untuk membuat jadwal otomatis?')) return;
+    if (!confirm('Seluruh data guru, rombel kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin Google OR-Tools di GitHub Actions untuk membuat jadwal otomatis anti-bentrok?')) {
+      return;
+    }
 
     setIsGenerating(true);
     setJobStatus({
@@ -459,7 +540,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Ekspor Excel (.xlsx)
+  // Ekspor Excel
   const handleExportExcel = () => {
     if (schedules.length === 0) {
       alert('Belum ada jadwal yang terbentuk untuk diekspor.');
@@ -555,7 +636,6 @@ export const App: React.FC = () => {
               <span>Import Excel</span>
             </button>
 
-            {/* MENU BARU: PENUGASAN GURU */}
             <button
               onClick={() => setIsAssignmentModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold transition shadow-sm"
@@ -565,7 +645,6 @@ export const App: React.FC = () => {
               <span>Penugasan Guru</span>
             </button>
 
-            {/* MENU KARTU BEBAN MENGAJAR (POLA & RUANGAN) */}
             <button
               onClick={() => {
                 if (uniqueSubjectTeacherPairs.length > 0 && !configAssignmentKey) {
@@ -599,17 +678,32 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
+            {/* TOMBOL GENERATE JADWAL OTOMATIS DENGAN VALIDASI KETAT */}
             <button
               onClick={handleTriggerSolver}
-              disabled={isGenerating}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold text-white shadow-md transition ${
-                isGenerating ? 'bg-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
+              disabled={isGenerating || !validationStatus.isValid}
+              title={
+                !validationStatus.isValid
+                  ? 'Belum dapat dijalankan:\n• ' + validationStatus.issues.join('\n• ')
+                  : 'Klik untuk membuat jadwal otomatis'
+              }
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
+                isGenerating
+                  ? 'bg-slate-400 text-white cursor-not-allowed'
+                  : !validationStatus.isValid
+                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed hover:bg-slate-200'
+                  : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 cursor-pointer'
               }`}
             >
               {isGenerating ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   <span>Menyusun Jadwal...</span>
+                </>
+              ) : !validationStatus.isValid ? (
+                <>
+                  <Lock className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Generate Jadwal Otomatis</span>
                 </>
               ) : (
                 <>
@@ -622,9 +716,26 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* BANNER STATUS KESIAPAN DATA (JIKA BELUM SIAP) */}
+      {!validationStatus.isValid && (
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-bold">Tombol Generate Jadwal belum aktif.</span> Harap lengkapi pengaturan berikut:
+              <ul className="list-disc list-inside mt-1 space-y-0.5 text-amber-800 text-[11px]">
+                {validationStatus.issues.map((issue, idx) => (
+                  <li key={idx}>{issue}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* BANNER STATUS SOLVER */}
       {jobStatus.status !== 'idle' && (
-        <div className="max-w-7xl mx-auto w-full px-6 pt-4 print:hidden">
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div
             className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs transition ${
               jobStatus.status === 'processing' || jobStatus.status === 'queued'
@@ -819,7 +930,7 @@ export const App: React.FC = () => {
         onDataImported={fetchAllData}
       />
 
-      {/* MODAL BARU: PENUGASAN GURU (SK KBM) */}
+      {/* MODAL 3: PENUGASAN GURU */}
       <AssignmentModal
         isOpen={isAssignmentModalOpen}
         onClose={() => setIsAssignmentModalOpen(false)}
@@ -830,7 +941,7 @@ export const App: React.FC = () => {
         onDataUpdated={fetchAllData}
       />
 
-      {/* MODAL KARTU BEBAN MENGAJAR (PENGATURAN POLA PECAH BLOK & RUANGAN MULTI-KELAS) */}
+      {/* MODAL 4: KARTU BEBAN MENGAJAR (POLA PECAH BLOK & RUANGAN MULTI-KELAS) */}
       {isLessonModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
@@ -888,7 +999,6 @@ export const App: React.FC = () => {
                   </select>
                 </div>
 
-                {/* Pilih Banyak Kelas Tujuan Pengaturan */}
                 <div className="pt-2 border-t border-slate-200">
                   <div className="flex items-center justify-between mb-2">
                     <label className="block font-bold text-slate-700">
@@ -951,7 +1061,6 @@ export const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Pengaturan Pola, Ruangan, dan Zona */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-200">
                   <div>
                     <label className="block font-bold text-slate-700 mb-1">
@@ -1068,7 +1177,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL SLOT JAM */}
+      {/* MODAL 5: SLOT JAM */}
       {isSlotModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden p-6 space-y-5 text-xs">
@@ -1249,7 +1358,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL SYARAT JAM GURU */}
+      {/* MODAL 6: SYARAT JAM GURU */}
       {isConstraintModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden p-6 space-y-4 text-xs">
