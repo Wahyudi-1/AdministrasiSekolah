@@ -1,4 +1,4 @@
-import { SupabaseClient } from '@supabase/supabase-js';
+import { setIDBValue, getIDBValue } from './idb';
 
 export interface SyncQueueItem {
   id: string;
@@ -9,34 +9,42 @@ export interface SyncQueueItem {
   matchColumn?: string;
   matchValue?: any;
   timestamp: number;
+  updated_at: string; // ISO String saat offline
+  expected_version?: number; // OCC Versioning
   description: string;
 }
 
 const QUEUE_KEY_PREFIX = 'smart_timetable_sync_queue_';
 
-// Ambil seluruh antrean perubahan untuk sekolah yang sedang aktif
+// Ambil antrean sinkronisasi
 export const getSyncQueue = (schoolId: string): SyncQueueItem[] => {
   try {
     const raw = localStorage.getItem(`${QUEUE_KEY_PREFIX}${schoolId}`);
     return raw ? JSON.parse(raw) : [];
   } catch (e) {
-    console.error('Gagal membaca antrean sinkronisasi:', e);
+    console.error('Gagal membaca antrean lokal:', e);
     return [];
   }
 };
 
-// Simpan antrean ke memori lokal
+// Simpan antrean ke LocalStorage dan IndexedDB (agar terbaca oleh Service Worker)
 export const saveSyncQueue = (schoolId: string, queue: SyncQueueItem[]) => {
   try {
     localStorage.setItem(`${QUEUE_KEY_PREFIX}${schoolId}`, JSON.stringify(queue));
+    // Simpan ke IndexedDB untuk dibaca Service Worker saat Native Background Sync
+    setIDBValue('sync_queue', 'items', queue).catch((err) =>
+      console.warn('Gagal sync ke IDB:', err)
+    );
   } catch (e) {
-    console.error('Gagal menyimpan antrean sinkronisasi:', e);
+    console.error('Gagal menyimpan antrean:', e);
   }
 };
 
-// Masukkan aksi mutasi baru ke antrean
+// Tambahkan aksi ke antrean dengan timestamp & versioning
 export const enqueueSyncAction = (
-  item: Omit<SyncQueueItem, 'id' | 'timestamp'>
+  item: Omit<SyncQueueItem, 'id' | 'timestamp' | 'updated_at'> & {
+    expected_version?: number;
+  }
 ): SyncQueueItem => {
   const fullItem: SyncQueueItem = {
     ...item,
@@ -44,60 +52,48 @@ export const enqueueSyncAction = (
       ? crypto.randomUUID()
       : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     timestamp: Date.now(),
+    updated_at: new Date().toISOString(),
+    expected_version: item.expected_version ?? 1,
   };
+
   const queue = getSyncQueue(item.school_id);
   queue.push(fullItem);
   saveSyncQueue(item.school_id, queue);
+
+  // Daftarkan Native SyncManager jika didukung oleh peramban
+  if ('serviceWorker' in navigator && 'SyncManager' in window) {
+    navigator.serviceWorker.ready
+      .then((reg: any) => reg.sync.register('sync-timetable-mutations'))
+      .catch((err) => console.warn('Background sync registration failed:', err));
+  }
+
   return fullItem;
 };
 
-// Jalankan dan kirim semua antrean ke Supabase
+// Sinkronisasi manual dari UI React (Client-side fallback)
 export const processSyncQueue = async (
-  supabase: SupabaseClient,
+  supabase: any,
   schoolId: string
-): Promise<{ success: boolean; processedCount: number; errors: any[] }> => {
+): Promise<{ success: boolean; processedCount: number; conflictCount: number }> => {
   const queue = getSyncQueue(schoolId);
-  if (queue.length === 0) return { success: true, processedCount: 0, errors: [] };
+  if (queue.length === 0) return { success: true, processedCount: 0, conflictCount: 0 };
 
-  const errors: any[] = [];
-  const remainingQueue: SyncQueueItem[] = [];
-  let processedCount = 0;
+  try {
+    const { data, error } = await supabase.rpc('process_offline_sync', {
+      mutations: queue,
+    });
 
-  for (const item of queue) {
-    try {
-      const query: any = supabase.from(item.table);
-      if (item.operation === 'insert') {
-        const { error } = await query.insert(item.payload);
-        if (error) throw error;
-      } else if (item.operation === 'upsert') {
-        const { error } = await query.upsert(item.payload, {
-          onConflict: item.matchColumn || undefined,
-        });
-        if (error) throw error;
-      } else if (item.operation === 'update') {
-        const { error } = await query
-          .update(item.payload)
-          .eq(item.matchColumn || 'id', item.matchValue);
-        if (error) throw error;
-      } else if (item.operation === 'delete') {
-        const { error } = await query
-          .delete()
-          .eq(item.matchColumn || 'id', item.matchValue);
-        if (error) throw error;
-      }
-      processedCount++;
-    } catch (err: any) {
-      console.error(`Gagal sinkronisasi aksi [${item.description}]:`, err);
-      errors.push({ item, error: err.message || err });
-      // Simpan kembali item yang gagal agar tidak hilang
-      remainingQueue.push(item);
-    }
+    if (error) throw error;
+
+    // Kosongkan antrean setelah dieksekusi oleh RPC
+    saveSyncQueue(schoolId, []);
+    return {
+      success: true,
+      processedCount: data?.processed || 0,
+      conflictCount: data?.conflicts || 0,
+    };
+  } catch (err: any) {
+    console.error('Gagal memproses sync queue RPC:', err);
+    throw err;
   }
-
-  saveSyncQueue(schoolId, remainingQueue);
-  return {
-    success: errors.length === 0,
-    processedCount,
-    errors,
-  };
 };
