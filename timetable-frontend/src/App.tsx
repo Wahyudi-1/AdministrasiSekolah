@@ -348,19 +348,16 @@ export const App: React.FC = () => {
     }
     setSavingLesson(true);
     try {
-      const splitArray = lessonSplitPattern
-        .split('+')
-        .map((s) => Number(s.trim()))
-        .filter((n) => !isNaN(n) && n > 0);
-
+      // Mengirimkan total_periods_per_week agar sesuai dengan nama kolom tabel di Supabase
       const { error } = await supabase.from('lessons').insert([
         {
           teacher_id: lessonTeacherId,
           subject_id: lessonSubjectId,
           class_id: lessonClassId,
           preferred_room_id: lessonRoomId || null,
-          total_periods: Number(lessonTotalPeriods),
-          split_pattern: splitArray,
+          total_periods_per_week: Number(lessonTotalPeriods),
+          total_periods: Number(lessonTotalPeriods), // kompatibel jika kolom baru sudah ditambahkan
+          split_pattern: lessonSplitPattern.trim(),
           allowed_slot_types: lessonZone,
         },
       ]);
