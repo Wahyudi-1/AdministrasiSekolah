@@ -22,7 +22,6 @@ import {
   Layers,
   CheckSquare,
   Square,
-  Lock,
   LogOut,
   KeyRound,
   School,
@@ -308,7 +307,7 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // Validasi Kesiapan Tombol Generate Jadwal
+  // Validasi Kesiapan Data Penjadwalan
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
 
@@ -573,17 +572,23 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
+  // Pemicu Solver GitHub Actions dengan Peringatan & Konfirmasi
   const handleTriggerSolver = async () => {
+    // 1. Jika data belum lengkap, tampilkan peringatan rincian dan minta konfirmasi apakah tetap ingin melanjutkan
     if (!validationStatus.isValid) {
-      alert(
-        'Belum dapat menyusun jadwal otomatis!\n\nLengkapi data berikut terlebih dahulu:\n• ' +
-          validationStatus.issues.join('\n• ')
-      );
-      return;
-    }
+      const warningMessage =
+        'PERINGATAN: Pengaturan data belum lengkap:\n\n' +
+        validationStatus.issues.map((issue) => `• ${issue}`).join('\n') +
+        '\n\nMenyusun jadwal saat data belum lengkap dapat menyebabkan jadwal tidak optimal atau gagal memenuhi target jam.\n\nApakah Anda yakin tetap ingin melanjutkan proses generate jadwal otomatis?';
 
-    if (!confirm('Jalankan mesin Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?')) {
-      return;
+      const proceedWithIncomplete = window.confirm(warningMessage);
+      if (!proceedWithIncomplete) return;
+    } else {
+      // 2. Jika seluruh data sudah lengkap, tampilkan konfirmasi standar
+      const proceedComplete = window.confirm(
+        'Seluruh data guru, rombel kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
+      );
+      if (!proceedComplete) return;
     }
 
     setIsGenerating(true);
@@ -809,7 +814,7 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Tombol Panel Token: HANYA MUNCUL JIKA LOGIN SEBAGAI ADMIN */}
+            {/* Tombol Panel Token (Khusus Admin) */}
             {isAdmin && (
               <button
                 onClick={() => setIsAdminModalOpen(true)}
@@ -877,14 +882,18 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
+            {/* TOMBOL GENERATE JADWAL OTOMATIS: SELALU AKTIF */}
             <button
               onClick={handleTriggerSolver}
-              disabled={isGenerating || !validationStatus.isValid}
+              disabled={isGenerating}
+              title={
+                !validationStatus.isValid
+                  ? 'Catatan: Ada beberapa pengaturan data yang belum lengkap. Klik untuk melihat detail & konfirmasi.'
+                  : 'Klik untuk membuat jadwal otomatis'
+              }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isGenerating
                   ? 'bg-slate-400 text-white cursor-not-allowed'
-                  : !validationStatus.isValid
-                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
                   : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 cursor-pointer'
               }`}
             >
@@ -892,11 +901,6 @@ export const App: React.FC = () => {
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   <span>Menyusun Jadwal...</span>
-                </>
-              ) : !validationStatus.isValid ? (
-                <>
-                  <Lock className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Generate Jadwal Otomatis</span>
                 </>
               ) : (
                 <>
@@ -918,18 +922,21 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* BANNER STATUS KESIAPAN DATA */}
+      {/* BANNER STATUS KESIAPAN DATA (INFORMASIONAL) */}
       {!validationStatus.isValid && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div className="flex-1">
-              <span className="font-bold">Tombol Generate Jadwal belum aktif.</span> Harap lengkapi pengaturan berikut:
+              <span className="font-bold">Pengaturan jadwal belum lengkap:</span>
               <ul className="list-disc list-inside mt-1 space-y-0.5 text-amber-800 text-[11px]">
                 {validationStatus.issues.map((issue, idx) => (
                   <li key={idx}>{issue}</li>
                 ))}
               </ul>
+              <p className="mt-1.5 text-[11px] text-amber-700 italic">
+                * Anda tetap dapat menekan tombol "Generate Jadwal Otomatis" untuk melanjutkan jika diinginkan.
+              </p>
             </div>
           </div>
         </div>
@@ -1130,7 +1137,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL ADMIN TOKEN: HANYA DI-RENDER JIKA LOGIN SEBAGAI ADMIN */}
+      {/* MODAL ADMIN TOKEN (HANYA DI-RENDER JIKA LOGIN SEBAGAI ADMIN) */}
       {isAdmin && (
         <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />
       )}
