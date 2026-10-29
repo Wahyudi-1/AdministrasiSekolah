@@ -187,6 +187,15 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // Listener untuk mengembalikan mode cetak setelah print dialog ditutup
+  useEffect(() => {
+    const handleAfterPrint = () => {
+      setPrintMode('SINGLE');
+    };
+    window.addEventListener('afterprint', handleAfterPrint);
+    return () => window.removeEventListener('afterprint', handleAfterPrint);
+  }, []);
+
   useEffect(() => {
     if (filterMode === 'CLASS' && classes.length > 0) {
       if (!classes.some((c) => c.id === selectedId)) setSelectedId(classes[0].id);
@@ -211,20 +220,16 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // =========================================================================
-  // LOGIKA VALIDASI KESIAPAN GENERASI JADWAL
-  // =========================================================================
+  // Validasi Kesiapan Tombol Generate
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
 
-    // 1. Cek Data Master
     if (teachers.length === 0) issues.push('Belum ada data Guru di Master Data.');
     if (classes.length === 0) issues.push('Belum ada data Kelas di Master Data.');
     if (subjects.length === 0) issues.push('Belum ada data Mata Pelajaran.');
     if (timeSlots.length === 0) issues.push('Slot Hari & Jam belum dikonfigurasi.');
     if (lessons.length === 0) issues.push('Belum ada Kartu Beban Mengajar yang dibuat.');
 
-    // 2. Cek apakah seluruh guru di master data sudah ditugaskan
     if (teachers.length > 0 && lessons.length > 0) {
       const unassignedTeachers = teachers.filter(
         (t) => !lessons.some((l) => l.teacher_id === t.id)
@@ -236,7 +241,6 @@ export const App: React.FC = () => {
       }
     }
 
-    // 3. Cek apakah seluruh kelas sudah memiliki pelajaran
     if (classes.length > 0 && lessons.length > 0) {
       const unassignedClasses = classes.filter(
         (c) => !lessons.some((l) => l.class_id === c.id)
@@ -248,12 +252,9 @@ export const App: React.FC = () => {
       }
     }
 
-    // 4. Cek kelengkapan pola pecah blok dan zona slot pada setiap kartu pelajaran
     if (lessons.length > 0) {
       const invalidLessons = lessons.filter((l) => {
-        // Harus ada zona slot
         if (!l.allowed_slot_types) return true;
-
         const totalJP = Number(l.total_periods ?? l.total_periods_per_week ?? 0);
         if (totalJP <= 0) return true;
 
@@ -262,15 +263,12 @@ export const App: React.FC = () => {
           : String(l.split_pattern || '').trim();
 
         if (!patternStr) return true;
-
         const parts = patternStr
           .split('+')
           .map((s) => Number(s.trim()))
           .filter((n) => !isNaN(n) && n > 0);
 
         if (parts.length === 0) return true;
-
-        // Penjumlahan pola blok wajib sama dengan total JP kartu tersebut
         const sum = parts.reduce((a, b) => a + b, 0);
         return sum !== totalJP;
       });
@@ -288,7 +286,6 @@ export const App: React.FC = () => {
     };
   }, [teachers, classes, subjects, timeSlots, lessons]);
 
-  // Saat pilihan penugasan berganti di modal Kartu Mapel
   const handleAssignmentKeyChange = (key: string) => {
     setConfigAssignmentKey(key);
     if (!key) {
@@ -309,7 +306,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Simpan Konfigurasi Kartu Beban Mengajar (Multi-Kelas)
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!configAssignmentKey) {
@@ -384,7 +380,6 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
-  // Toggle Hari Aktif
   const handleToggleDay = async (day: WorkDay) => {
     const { error } = await supabase
       .from('work_days')
@@ -404,7 +399,6 @@ export const App: React.FC = () => {
     setTargetDayIndices(activeIndices);
   };
 
-  // Simpan Slot Waktu
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
     if (targetDayIndices.length === 0) {
@@ -437,7 +431,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Reset Semua Slot
   const handleResetAllSlots = async () => {
     const konfirmasi = window.confirm(
       'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran yang saat ini terpasang di matriks.\n\nApakah Anda yakin ingin mengosongkan semua slot waktu?'
@@ -467,7 +460,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Syarat Jam Berhalangan Guru
   const handleAddConstraint = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTeacherId) return;
@@ -511,7 +503,6 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
-  // Pemicu Solver GitHub Actions dengan Proteksi Validasi
   const handleTriggerSolver = async () => {
     if (!validationStatus.isValid) {
       alert(
@@ -540,7 +531,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Ekspor Excel
   const handleExportExcel = () => {
     if (schedules.length === 0) {
       alert('Belum ada jadwal yang terbentuk untuk diekspor.');
@@ -593,12 +583,131 @@ export const App: React.FC = () => {
     setPrintMode(mode);
     setTimeout(() => {
       window.print();
-      setPrintMode('SINGLE');
-    }, 300);
+    }, 450);
   };
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-800">
+      
+      {/* ATURAN CSS PRINT KHUSUS (1 LEMBAR A4 LANSKAP PER KELAS / GURU) */}
+      <style>{`
+        @media print {
+          @page {
+            size: A4 landscape;
+            margin: 5mm 6mm;
+          }
+
+          html, body {
+            width: 100% !important;
+            height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+
+          /* Hilangkan semua tombol, navigasi, dan header web */
+          header,
+          nav,
+          .print\\:hidden,
+          button,
+          .no-print {
+            display: none !important;
+          }
+
+          main {
+            padding: 0 !important;
+            margin: 0 !important;
+            max-width: none !important;
+            width: 100% !important;
+          }
+
+          /* Wadah 1 Lembar Per Kelas / Guru */
+          .print-sheet {
+            page-break-after: always !important;
+            break-after: page !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            width: 100% !important;
+            height: 98vh !important;
+            max-height: 98vh !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: flex-start !important;
+            box-sizing: border-box !important;
+            overflow: hidden !important;
+            padding: 0 !important;
+            margin: 0 !important;
+          }
+
+          .print-header {
+            flex-shrink: 0 !important;
+            margin-bottom: 4px !important;
+            padding-bottom: 2px !important;
+          }
+
+          /* Tabel menyesuaikan tinggi halaman secara otomatis */
+          .print-sheet > div,
+          .print-sheet .timetable-container {
+            flex: 1 1 auto !important;
+            display: flex !important;
+            flex-direction: column !important;
+            height: 100% !important;
+            overflow: hidden !important;
+            border: none !important;
+            box-shadow: none !important;
+          }
+
+          .print-sheet table {
+            width: 100% !important;
+            height: calc(100% - 24px) !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
+          }
+
+          .print-sheet th,
+          .print-sheet td {
+            padding: 2px 3px !important;
+            font-size: 8.5pt !important;
+            line-height: 1.15 !important;
+            border: 1px solid #cbd5e1 !important;
+            height: auto !important;
+            min-height: 0 !important;
+          }
+
+          .print-sheet th {
+            background-color: #0f172a !important;
+            color: #ffffff !important;
+            font-weight: bold !important;
+            font-size: 8.5pt !important;
+            padding: 3px !important;
+            text-align: center !important;
+          }
+
+          /* Format padat untuk kartu pelajaran */
+          .print-sheet td > div,
+          .print-sheet [class*="rounded"] {
+            min-height: 0 !important;
+            padding: 1px 3px !important;
+            margin: 0 !important;
+            box-shadow: none !important;
+          }
+
+          .print-sheet .font-bold {
+            font-size: 8.5pt !important;
+            line-height: 1.1 !important;
+          }
+
+          .print-sheet .text-xs,
+          .print-sheet .text-\\[10px\\],
+          .print-sheet .text-\\[11px\\] {
+            font-size: 7.5pt !important;
+            line-height: 1 !important;
+          }
+        }
+      `}</style>
+
       {/* HEADER NAVIGASI UTAMA */}
       <header className="bg-white border-b border-slate-200 px-6 py-3.5 shadow-sm sticky top-0 z-40 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
@@ -639,7 +748,6 @@ export const App: React.FC = () => {
             <button
               onClick={() => setIsAssignmentModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold transition shadow-sm"
-              title="Atur pembagian tugas guru, mapel, kelas, dan total JP"
             >
               <UserCheck className="w-4 h-4 text-indigo-700" />
               <span>Penugasan Guru</span>
@@ -653,7 +761,6 @@ export const App: React.FC = () => {
                 setIsLessonModalOpen(true);
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
-              title="Atur pola pecah blok (split) dan ruangan khusus"
             >
               <Layers className="w-4 h-4 text-indigo-600" />
               <span>Kartu Beban Mengajar</span>
@@ -678,7 +785,6 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
-            {/* TOMBOL GENERATE JADWAL OTOMATIS DENGAN VALIDASI KETAT */}
             <button
               onClick={handleTriggerSolver}
               disabled={isGenerating || !validationStatus.isValid}
@@ -716,7 +822,7 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* BANNER STATUS KESIAPAN DATA (JIKA BELUM SIAP) */}
+      {/* BANNER STATUS KESIAPAN DATA */}
       {!validationStatus.isValid && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
@@ -846,29 +952,43 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* MATRIKS JADWAL UTAMA */}
+        {/* MATRIKS JADWAL DENGAN PEMBATAS 1 HALAMAN PER KELAS / GURU */}
         <div className="flex-1">
           {printMode === 'SINGLE' && (
-            <TimetableGrid
-              workDays={workDays}
-              timeSlots={timeSlots}
-              teachers={teachers}
-              classes={classes}
-              rooms={rooms}
-              subjects={subjects}
-              lessons={lessons}
-              schedules={schedules}
-              filterMode={filterMode}
-              selectedId={selectedId}
-              onScheduleUpdated={fetchAllData}
-            />
+            <div className="print-sheet">
+              <TimetableGrid
+                workDays={workDays}
+                timeSlots={timeSlots}
+                teachers={teachers}
+                classes={classes}
+                rooms={rooms}
+                subjects={subjects}
+                lessons={lessons}
+                schedules={schedules}
+                filterMode={filterMode}
+                selectedId={selectedId}
+                onScheduleUpdated={fetchAllData}
+              />
+            </div>
           )}
 
           {printMode === 'ALL_CLASSES' && (
-            <div className="space-y-8">
+            <div className="space-y-8 print:space-y-0">
               {classes.map((cls) => (
-                <div key={cls.id} className="break-after-page">
-                  <h2 className="text-base font-bold mb-2">Jadwal Pelajaran — Kelas {cls.class_name}</h2>
+                <div key={cls.id} className="print-sheet">
+                  <div className="print-header flex items-center justify-between border-b border-slate-300 pb-1 mb-1">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900 tracking-wide">
+                        JADWAL PELAJARAN — KELAS {cls.class_name.toUpperCase()}
+                      </h2>
+                      <p className="text-[10px] text-slate-500">
+                        Tahun Ajaran Aktif • Smart Timetable CSP
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono font-semibold text-slate-400">
+                      sekolah.ewahyu.my.id
+                    </span>
+                  </div>
                   <TimetableGrid
                     workDays={workDays}
                     timeSlots={timeSlots}
@@ -887,12 +1007,22 @@ export const App: React.FC = () => {
           )}
 
           {printMode === 'ALL_TEACHERS' && (
-            <div className="space-y-8">
+            <div className="space-y-8 print:space-y-0">
               {teachers.map((tch) => (
-                <div key={tch.id} className="break-after-page">
-                  <h2 className="text-base font-bold mb-2">
-                    Jadwal Mengajar — {tch.full_name} ({tch.teacher_code})
-                  </h2>
+                <div key={tch.id} className="print-sheet">
+                  <div className="print-header flex items-center justify-between border-b border-slate-300 pb-1 mb-1">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900 tracking-wide">
+                        JADWAL MENGAJAR — {tch.full_name.toUpperCase()} ({tch.teacher_code})
+                      </h2>
+                      <p className="text-[10px] text-slate-500">
+                        Beban Mengajar Guru • Smart Timetable CSP
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono font-semibold text-slate-400">
+                      sekolah.ewahyu.my.id
+                    </span>
+                  </div>
                   <TimetableGrid
                     workDays={workDays}
                     timeSlots={timeSlots}
@@ -941,7 +1071,7 @@ export const App: React.FC = () => {
         onDataUpdated={fetchAllData}
       />
 
-      {/* MODAL 4: KARTU BEBAN MENGAJAR (POLA PECAH BLOK & RUANGAN MULTI-KELAS) */}
+      {/* MODAL 4: KARTU BEBAN MENGAJAR */}
       {isLessonModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
@@ -1122,7 +1252,6 @@ export const App: React.FC = () => {
               </form>
             )}
 
-            {/* Daftar Kartu Beban Mengajar */}
             <div className="border-t pt-3 overflow-y-auto flex-1 space-y-1.5">
               <p className="font-bold text-slate-600 mb-1">
                 Daftar Kartu Beban Mengajar Terdaftar ({lessons.length})
