@@ -48,8 +48,13 @@ import {
   ScheduleItem,
 } from './types';
 
+// Daftar email administrator yang berhak mengelola token & database
+const ADMIN_EMAILS = [
+  'joedie.meyson@gmail.com',
+];
+
 export const App: React.FC = () => {
-  // State Autentikasi & Profil Sekolah Aktif
+  // State Autentikasi & Profil Sekolah
   const [session, setSession] = useState<Session | null>(null);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
   const [schoolProfile, setSchoolProfile] = useState<{
@@ -58,7 +63,7 @@ export const App: React.FC = () => {
     school_address: string;
   } | null>(null);
 
-  // State Master & Jadwal
+  // State Data Master & Jadwal
   const [workDays, setWorkDays] = useState<WorkDay[]>([]);
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -116,6 +121,14 @@ export const App: React.FC = () => {
     message: 'GitHub Actions Solver: Siap',
   });
 
+  // Validasi Hak Akses Admin
+  const isAdmin = useMemo(() => {
+    if (!session?.user?.email) return false;
+    return ADMIN_EMAILS.map((email) => email.toLowerCase()).includes(
+      session.user.email.toLowerCase()
+    );
+  }, [session?.user?.email]);
+
   // 1. Pemeriksaan Sesi Login Supabase
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -128,7 +141,6 @@ export const App: React.FC = () => {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (!session) {
-        // Kosongkan state ketika logout
         setTeachers([]);
         setClasses([]);
         setSubjects([]);
@@ -173,7 +185,6 @@ export const App: React.FC = () => {
         setSchoolProfile(profileRes.data);
       }
 
-      // Jika sekolah baru belum memiliki work_days, buatkan otomatis
       if (daysRes.data && daysRes.data.length === 0) {
         const defaultDays = [
           { school_id: schoolId, day_index: 1, day_name: 'Senin', is_active: true },
@@ -277,7 +288,6 @@ export const App: React.FC = () => {
     }
   }, [filterMode, classes, teachers]);
 
-  // Handler Logout
   const handleLogout = async () => {
     if (!confirm('Keluar dari sesi akun sekolah ini?')) return;
     await supabase.auth.signOut();
@@ -658,7 +668,7 @@ export const App: React.FC = () => {
     }
   }, [filterMode, selectedId, classes, teachers, schoolProfile]);
 
-  // Tampilan Loading Sesi Awal
+  // Loading state sesi
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm gap-2">
@@ -668,7 +678,7 @@ export const App: React.FC = () => {
     );
   }
 
-  // Jika Belum Login, Tampilkan Halaman Login / Registrasi Token
+  // Tampilkan AuthPage jika belum login
   if (!session) {
     return <AuthPage onAuthSuccess={fetchAllData} />;
   }
@@ -799,15 +809,17 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Tombol Panel Token Admin */}
-            <button
-              onClick={() => setIsAdminModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold transition shadow-sm"
-              title="Generate dan kelola token akses sekolah"
-            >
-              <KeyRound className="w-4 h-4 text-amber-600" />
-              <span>Panel Token</span>
-            </button>
+            {/* Tombol Panel Token: HANYA MUNCUL JIKA LOGIN SEBAGAI ADMIN */}
+            {isAdmin && (
+              <button
+                onClick={() => setIsAdminModalOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold transition shadow-sm"
+                title="Generate dan kelola token akses sekolah"
+              >
+                <KeyRound className="w-4 h-4 text-amber-600" />
+                <span>Panel Token</span>
+              </button>
+            )}
 
             <button
               onClick={() => setIsMasterModalOpen(true)}
@@ -894,7 +906,6 @@ export const App: React.FC = () => {
               )}
             </button>
 
-            {/* Tombol Logout */}
             <button
               onClick={handleLogout}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition"
@@ -1119,8 +1130,10 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL ADMIN TOKEN */}
-      <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />
+      {/* MODAL ADMIN TOKEN: HANYA DI-RENDER JIKA LOGIN SEBAGAI ADMIN */}
+      {isAdmin && (
+        <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />
+      )}
 
       {/* MODAL MASTER DATA */}
       <MasterDataModal
