@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Calendar,
   Clock,
@@ -28,11 +28,17 @@ import {
   Download,
   Wifi,
   WifiOff,
+  CloudUpload,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Session } from '@supabase/supabase-js';
 import { supabase } from './lib/supabaseClient';
 import { triggerScheduleGeneration } from './lib/solverApi';
+import {
+  getSyncQueue,
+  enqueueSyncAction,
+  processSyncQueue,
+} from './lib/syncQueue';
 import { TimetableGrid } from './components/TimetableGrid';
 import { MasterDataModal } from './components/MasterDataModal';
 import { ExcelImportModal } from './components/ExcelImportModal';
@@ -64,10 +70,13 @@ export const App: React.FC = () => {
     school_address: string;
   } | null>(null);
 
-  // State PWA & Koneksi Jaringan
+  // State PWA, Jaringan & Antrean Sinkronisasi
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState<boolean>(false);
+  const [pendingQueueCount, setPendingQueueCount] = useState<number>(0);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [syncFeedback, setSyncFeedback] = useState<string>('');
 
   // State Data Master & Jadwal
   const [workDays, setWorkDays] = useState<WorkDay[]>([]);
@@ -127,7 +136,6 @@ export const App: React.FC = () => {
     message: 'GitHub Actions Solver: Siap',
   });
 
-  // Validasi Hak Akses Admin
   const isAdmin = useMemo(() => {
     if (!session?.user?.email) return false;
     return ADMIN_EMAILS.map((email) => email.toLowerCase()).includes(
@@ -135,11 +143,45 @@ export const App: React.FC = () => {
     );
   }, [session?.user?.email]);
 
-  // Listener PWA Install Prompt & Online/Offline Status
+  // Perbarui jumlah item yang menunggu disinkronkan
+  const refreshQueueCount = useCallback(() => {
+    if (!session?.user?.id) return;
+    const items = getSyncQueue(session.user.id);
+    setPendingQueueCount(items.length);
+  }, [session?.user?.id]);
+
+  // Eksekusi antrean sinkronisasi saat terhubung ke internet
+  const triggerAutoSync = useCallback(async () => {
+    const schoolId = session?.user?.id;
+    if (!schoolId || !navigator.onLine || isSyncing) return;
+
+    const queue = getSyncQueue(schoolId);
+    if (queue.length === 0) return;
+
+    setIsSyncing(true);
+    setSyncFeedback(`Menyinkronkan ${queue.length} perubahan ke database...`);
+    try {
+      const result = await processSyncQueue(supabase, schoolId);
+      refreshQueueCount();
+      if (result.processedCount > 0) {
+        setSyncFeedback(`Berhasil menyinkronkan ${result.processedCount} data!`);
+        setTimeout(() => setSyncFeedback(''), 4000);
+        // Refresh data cloud terbaru
+        await fetchAllData();
+      }
+    } catch (e: any) {
+      console.error('Sinkronisasi otomatis gagal:', e);
+      setSyncFeedback('Sinkronisasi tertunda. Akan dicoba lagi otomatis.');
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [session?.user?.id, isSyncing, refreshQueueCount]);
+
+  // Listener PWA & Perubahan Koneksi
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      fetchAllData();
+      triggerAutoSync();
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -161,7 +203,7 @@ export const App: React.FC = () => {
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
-  }, []);
+  }, [triggerAutoSync]);
 
   const handleInstallApp = async () => {
     if (!deferredPrompt) return;
@@ -173,7 +215,7 @@ export const App: React.FC = () => {
     setDeferredPrompt(null);
   };
 
-  // 1. Pemeriksaan Sesi Login
+  // Sesi Login
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -191,18 +233,32 @@ export const App: React.FC = () => {
         setLessons([]);
         setSchedules([]);
         setSchoolProfile(null);
+        setPendingQueueCount(0);
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. Mengambil Data (Dengan Fallback Cache Offline Lokal)
+  // Update Offline Cache Lokal
+  const updateLocalOfflineCache = (schoolId: string, partialData: Record<string, any>) => {
+    try {
+      const cached = localStorage.getItem(`offline_cache_${schoolId}`);
+      const current = cached ? JSON.parse(cached) : {};
+      const merged = { ...current, ...partialData };
+      localStorage.setItem(`offline_cache_${schoolId}`, JSON.stringify(merged));
+    } catch (e) {
+      console.error('Gagal memperbarui cache lokal:', e);
+    }
+  };
+
+  // Ambil Data (Online -> Cloud, Offline -> Cache)
   const fetchAllData = async () => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
 
-    // Jika sedang offline, ambil dari penyimpanan lokal (localStorage)
+    refreshQueueCount();
+
     if (!navigator.onLine) {
       try {
         const cached = localStorage.getItem(`offline_cache_${schoolId}`);
@@ -279,23 +335,19 @@ export const App: React.FC = () => {
       if (lessonsRes.data) setLessons(lessonsRes.data);
       if (schedulesRes.data) setSchedules(schedulesRes.data);
 
-      // Simpan salinan terbaru ke memori lokal untuk akses offline
-      localStorage.setItem(
-        `offline_cache_${schoolId}`,
-        JSON.stringify({
-          workDays: loadedWorkDays,
-          timeSlots: slotsRes.data || [],
-          teachers: teachersRes.data || [],
-          classes: classesRes.data || [],
-          rooms: roomsRes.data || [],
-          subjects: subjectsRes.data || [],
-          lessons: lessonsRes.data || [],
-          schedules: schedulesRes.data || [],
-          schoolProfile: profileRes.data || null,
-        })
-      );
+      updateLocalOfflineCache(schoolId, {
+        workDays: loadedWorkDays,
+        timeSlots: slotsRes.data || [],
+        teachers: teachersRes.data || [],
+        classes: classesRes.data || [],
+        rooms: roomsRes.data || [],
+        subjects: subjectsRes.data || [],
+        lessons: lessonsRes.data || [],
+        schedules: schedulesRes.data || [],
+        schoolProfile: profileRes.data || null,
+      });
     } catch (err: any) {
-      console.error('Gagal mengambil data dari Supabase, beralih ke cache lokal:', err.message);
+      console.error('Gagal mengambil data dari Supabase, memuat cache offline:', err.message);
       const cached = localStorage.getItem(`offline_cache_${schoolId}`);
       if (cached) {
         const parsed = JSON.parse(cached);
@@ -383,7 +435,14 @@ export const App: React.FC = () => {
   }, [filterMode, classes, teachers]);
 
   const handleLogout = async () => {
-    if (!confirm('Keluar dari sesi akun sekolah ini?')) return;
+    if (pendingQueueCount > 0) {
+      const confirmLogout = confirm(
+        `Perhatian: Masih ada ${pendingQueueCount} perubahan yang belum disinkronkan ke server. Jika Anda keluar sekarang, data lokal tetap aman tetapi belum masuk ke database sekolah. Lanjutkan keluar?`
+      );
+      if (!confirmLogout) return;
+    } else {
+      if (!confirm('Keluar dari sesi akun sekolah ini?')) return;
+    }
     await supabase.auth.signOut();
   };
 
@@ -487,13 +546,11 @@ export const App: React.FC = () => {
     }
   };
 
+  // 1. Simpan Kartu Beban Mengajar (Mendukung Offline & Online)
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isOnline) {
-      alert('Fitur penyimpanan kartu beban mengajar membutuhkan koneksi internet.');
-      return;
-    }
-    if (!configAssignmentKey || configTargetClassIds.length === 0) return;
+    const schoolId = session?.user?.id;
+    if (!schoolId || !configAssignmentKey || configTargetClassIds.length === 0) return;
 
     const [, sId] = configAssignmentKey.split('__');
     const targetPair = uniqueSubjectTeacherPairs.find((p) => p.key === configAssignmentKey);
@@ -513,26 +570,66 @@ export const App: React.FC = () => {
     }
 
     setSavingCardConfig(true);
+    const cleanPatternString = parts.join('+');
+
     try {
-      const cleanPatternString = parts.join('+');
-
-      for (const classId of configTargetClassIds) {
-        const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
-        if (existing) {
-          const { error } = await supabase
-            .from('lessons')
-            .update({
-              split_pattern: cleanPatternString,
-              allowed_slot_types: configZone,
-              preferred_room_id: configRoomId || null,
-            })
-            .eq('id', existing.id);
-          if (error) throw error;
+      // Pembaruan Optimistik State Lokal
+      const updatedLessons = lessons.map((l) => {
+        if (configTargetClassIds.includes(l.class_id) && l.subject_id === sId) {
+          return {
+            ...l,
+            split_pattern: cleanPatternString,
+            allowed_slot_types: configZone,
+            preferred_room_id: configRoomId || null,
+          };
         }
-      }
+        return l;
+      });
+      setLessons(updatedLessons);
+      updateLocalOfflineCache(schoolId, { lessons: updatedLessons });
 
-      await fetchAllData();
-      alert(`Berhasil memperbarui kartu beban mengajar untuk ${configTargetClassIds.length} kelas!`);
+      if (isOnline) {
+        // Simpan langsung ke Supabase jika Online
+        for (const classId of configTargetClassIds) {
+          const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
+          if (existing) {
+            const { error } = await supabase
+              .from('lessons')
+              .update({
+                split_pattern: cleanPatternString,
+                allowed_slot_types: configZone,
+                preferred_room_id: configRoomId || null,
+              })
+              .eq('id', existing.id);
+            if (error) throw error;
+          }
+        }
+        alert(`Berhasil memperbarui kartu beban mengajar untuk ${configTargetClassIds.length} kelas!`);
+      } else {
+        // Masukkan ke Antrean Sinkronisasi jika Offline
+        for (const classId of configTargetClassIds) {
+          const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
+          if (existing) {
+            enqueueSyncAction({
+              school_id: schoolId,
+              table: 'lessons',
+              operation: 'update',
+              matchColumn: 'id',
+              matchValue: existing.id,
+              payload: {
+                split_pattern: cleanPatternString,
+                allowed_slot_types: configZone,
+                preferred_room_id: configRoomId || null,
+              },
+              description: `Update Kartu Mapel (${existing.id})`,
+            });
+          }
+        }
+        refreshQueueCount();
+        alert(
+          `Tersimpan secara lokal (Offline)! Perubahan dimasukkan ke antrean dan otomatis diunggah saat kembali online.`
+        );
+      }
     } catch (err: any) {
       alert(`Gagal menyimpan pengaturan kartu: ${err.message}`);
     } finally {
@@ -552,26 +649,57 @@ export const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // 2. Hapus Kartu Pelajaran (Mendukung Offline & Online)
   const handleDeleteLesson = async (id: string) => {
-    if (!isOnline) {
-      alert('Perubahan data membutuhkan koneksi internet.');
-      return;
-    }
+    const schoolId = session?.user?.id;
+    if (!schoolId) return;
     if (!confirm('Hapus kartu pelajaran ini?')) return;
-    const { error } = await supabase.from('lessons').delete().eq('id', id);
-    if (!error) fetchAllData();
+
+    // Pembaruan Optimistik Lokal
+    const remaining = lessons.filter((l) => l.id !== id);
+    setLessons(remaining);
+    updateLocalOfflineCache(schoolId, { lessons: remaining });
+
+    if (isOnline) {
+      const { error } = await supabase.from('lessons').delete().eq('id', id);
+      if (error) console.error('Gagal menghapus online:', error);
+    } else {
+      enqueueSyncAction({
+        school_id: schoolId,
+        table: 'lessons',
+        operation: 'delete',
+        matchColumn: 'id',
+        matchValue: id,
+        description: `Hapus Kartu Pelajaran (${id})`,
+      });
+      refreshQueueCount();
+    }
   };
 
+  // 3. Toggle Hari Aktif (Mendukung Offline & Online)
   const handleToggleDay = async (day: WorkDay) => {
-    if (!isOnline) {
-      alert('Perubahan hari aktif membutuhkan koneksi internet.');
-      return;
+    const schoolId = session?.user?.id;
+    if (!schoolId) return;
+
+    const newActive = !day.is_active;
+    const updated = workDays.map((d) => (d.id === day.id ? { ...d, is_active: newActive } : d));
+    setWorkDays(updated);
+    updateLocalOfflineCache(schoolId, { workDays: updated });
+
+    if (isOnline) {
+      await supabase.from('work_days').update({ is_active: newActive }).eq('id', day.id);
+    } else {
+      enqueueSyncAction({
+        school_id: schoolId,
+        table: 'work_days',
+        operation: 'update',
+        matchColumn: 'id',
+        matchValue: day.id,
+        payload: { is_active: newActive },
+        description: `Ubah status hari ${day.day_name}`,
+      });
+      refreshQueueCount();
     }
-    const { error } = await supabase
-      .from('work_days')
-      .update({ is_active: !day.is_active })
-      .eq('id', day.id);
-    if (!error) fetchAllData();
   };
 
   const handleToggleTargetDay = (dayIndex: number) => {
@@ -585,33 +713,59 @@ export const App: React.FC = () => {
     setTargetDayIndices(activeIndices);
   };
 
+  // 4. Simpan Slot Jam (Mendukung Offline & Online)
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isOnline) {
-      alert('Konfigurasi slot jam membutuhkan koneksi internet.');
-      return;
-    }
-    if (!session?.user || targetDayIndices.length === 0) return;
+    const schoolId = session?.user?.id;
+    if (!schoolId || targetDayIndices.length === 0) return;
 
     setSavingSlot(true);
+    const recordsToUpsert = targetDayIndices.map((dayIdx) => ({
+      school_id: schoolId,
+      day_index: dayIdx,
+      period_number: Number(slotPeriod),
+      slot_name: slotName.trim(),
+      start_time: slotStart,
+      end_time: slotEnd,
+      slot_type: slotType,
+    }));
+
     try {
-      const recordsToUpsert = targetDayIndices.map((dayIdx) => ({
-        school_id: session.user.id,
-        day_index: dayIdx,
-        period_number: Number(slotPeriod),
-        slot_name: slotName.trim(),
-        start_time: slotStart,
-        end_time: slotEnd,
-        slot_type: slotType,
-      }));
+      // Pembaruan Optimistik State Lokal
+      const existingFiltered = timeSlots.filter(
+        (s) =>
+          !targetDayIndices.includes(s.day_index) || s.period_number !== Number(slotPeriod)
+      );
+      const newLocalSlots = [
+        ...existingFiltered,
+        ...recordsToUpsert.map((r, i) => ({
+          ...r,
+          id: `local_slot_${r.day_index}_${r.period_number}_${i}`,
+        })),
+      ] as TimeSlot[];
+      setTimeSlots(newLocalSlots);
+      updateLocalOfflineCache(schoolId, { timeSlots: newLocalSlots });
 
-      const { error } = await supabase
-        .from('time_slots')
-        .upsert(recordsToUpsert, { onConflict: 'school_id,day_index,period_number' });
-
-      if (error) throw error;
-      await fetchAllData();
-      alert(`Berhasil menyimpan "${slotName}" untuk ${targetDayIndices.length} hari kerja!`);
+      if (isOnline) {
+        const { error } = await supabase
+          .from('time_slots')
+          .upsert(recordsToUpsert, { onConflict: 'school_id,day_index,period_number' });
+        if (error) throw error;
+        alert(`Berhasil menyimpan "${slotName}" untuk ${targetDayIndices.length} hari kerja!`);
+      } else {
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'time_slots',
+          operation: 'upsert',
+          matchColumn: 'school_id,day_index,period_number',
+          payload: recordsToUpsert,
+          description: `Simpan Slot ${slotName} (${targetDayIndices.length} Hari)`,
+        });
+        refreshQueueCount();
+        alert(
+          `Slot waktu tersimpan secara lokal (Offline)! Akan otomatis diunggah ke database saat online.`
+        );
+      }
     } catch (err: any) {
       alert(`Gagal menyimpan slot waktu: ${err.message}`);
     } finally {
@@ -619,23 +773,46 @@ export const App: React.FC = () => {
     }
   };
 
+  // 5. Reset Slot Jam
   const handleResetAllSlots = async () => {
-    if (!isOnline) {
-      alert('Fitur reset slot jam membutuhkan koneksi internet.');
-      return;
-    }
-    if (!session?.user) return;
+    const schoolId = session?.user?.id;
+    if (!schoolId) return;
+
     const konfirmasi = window.confirm(
       'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran sekolah Anda yang saat ini terpasang di matriks.\n\nLanjutkan?'
     );
     if (!konfirmasi) return;
 
     setSavingSlot(true);
+    setTimeSlots([]);
+    setSchedules([]);
+    updateLocalOfflineCache(schoolId, { timeSlots: [], schedules: [] });
+
     try {
-      await supabase.from('schedules').delete().eq('school_id', session.user.id);
-      await supabase.from('time_slots').delete().eq('school_id', session.user.id);
-      await fetchAllData();
-      alert('Semua slot jam dan jadwal berhasil dikosongkan!');
+      if (isOnline) {
+        await supabase.from('schedules').delete().eq('school_id', schoolId);
+        await supabase.from('time_slots').delete().eq('school_id', schoolId);
+        alert('Semua slot jam dan jadwal berhasil dikosongkan!');
+      } else {
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'schedules',
+          operation: 'delete',
+          matchColumn: 'school_id',
+          matchValue: schoolId,
+          description: 'Hapus seluruh jadwal pelajaran',
+        });
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'time_slots',
+          operation: 'delete',
+          matchColumn: 'school_id',
+          matchValue: schoolId,
+          description: 'Hapus seluruh slot waktu',
+        });
+        refreshQueueCount();
+        alert('Slot jam dikosongkan secara lokal. Perintah hapus dimasukkan ke antrean sinkronisasi.');
+      }
     } catch (err: any) {
       alert(`Gagal mengosongkan slot jam: ${err.message}`);
     } finally {
@@ -643,13 +820,12 @@ export const App: React.FC = () => {
     }
   };
 
+  // 6. Syarat Jam Guru (Mendukung Offline & Online)
   const handleAddConstraint = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isOnline) {
-      alert('Pengaturan syarat jam guru membutuhkan koneksi internet.');
-      return;
-    }
-    if (!selectedTeacherId) return;
+    const schoolId = session?.user?.id;
+    if (!schoolId || !selectedTeacherId) return;
+
     setSavingConstraint(true);
     try {
       const teacher = teachers.find((t) => t.id === selectedTeacherId);
@@ -671,13 +847,32 @@ export const App: React.FC = () => {
         level: 'HARD',
       });
 
-      const { error } = await supabase
-        .from('teachers')
-        .update({ unavailable_slots: currentRules })
-        .eq('id', selectedTeacherId);
+      // Update Optimistik
+      const updatedTeachers = teachers.map((t) =>
+        t.id === selectedTeacherId ? { ...t, unavailable_slots: currentRules } : t
+      );
+      setTeachers(updatedTeachers);
+      updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
 
-      if (error) throw error;
-      await fetchAllData();
+      if (isOnline) {
+        const { error } = await supabase
+          .from('teachers')
+          .update({ unavailable_slots: currentRules })
+          .eq('id', selectedTeacherId);
+        if (error) throw error;
+      } else {
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'teachers',
+          operation: 'update',
+          matchColumn: 'id',
+          matchValue: selectedTeacherId,
+          payload: { unavailable_slots: currentRules },
+          description: `Update Syarat Jam Guru (${selectedTeacherId})`,
+        });
+        refreshQueueCount();
+        alert('Syarat jam tersimpan offline! Masuk antrean sinkronisasi.');
+      }
     } catch (err: any) {
       alert(`Gagal menyimpan syarat jam guru: ${err.message}`);
     } finally {
@@ -686,18 +881,44 @@ export const App: React.FC = () => {
   };
 
   const handleClearConstraint = async (teacherId: string) => {
-    if (!isOnline) {
-      alert('Reset syarat jam guru membutuhkan koneksi internet.');
-      return;
+    const schoolId = session?.user?.id;
+    if (!schoolId) return;
+
+    const updatedTeachers = teachers.map((t) =>
+      t.id === teacherId ? { ...t, unavailable_slots: [] } : t
+    );
+    setTeachers(updatedTeachers);
+    updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
+
+    if (isOnline) {
+      await supabase.from('teachers').update({ unavailable_slots: [] }).eq('id', teacherId);
+    } else {
+      enqueueSyncAction({
+        school_id: schoolId,
+        table: 'teachers',
+        operation: 'update',
+        matchColumn: 'id',
+        matchValue: teacherId,
+        payload: { unavailable_slots: [] },
+        description: `Reset Syarat Jam Guru (${teacherId})`,
+      });
+      refreshQueueCount();
     }
-    const { error } = await supabase.from('teachers').update({ unavailable_slots: [] }).eq('id', teacherId);
-    if (!error) fetchAllData();
   };
 
-  // Pemicu Solver GitHub Actions (Memerlukan Online)
+  // Pemicu Solver GitHub Actions (Memerlukan Akses Cloud / Online)
   const handleTriggerSolver = async () => {
     if (!isOnline) {
-      alert('Mesin pembuat jadwal Google OR-Tools di GitHub Actions memerlukan koneksi internet aktif. Sambungkan internet Anda terlebih dahulu.');
+      alert(
+        'Penyusunan jadwal otomatis menggunakan komputasi cloud Google OR-Tools di GitHub Actions. Sambungkan perangkat ke internet terlebih dahulu.'
+      );
+      return;
+    }
+
+    if (pendingQueueCount > 0) {
+      alert(
+        `Masih terdapat ${pendingQueueCount} perubahan data lokal yang belum selesai disinkronkan ke cloud. Harap tekan tombol "Sinkronkan Sekarang" terlebih dahulu agar enjin solver menerima data terbaru.`
+      );
       return;
     }
 
@@ -731,7 +952,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Ekspor Excel (Tetap Berfungsi Penuh Saat Offline)
   const handleExportExcel = () => {
     if (schedules.length === 0) {
       alert('Belum ada jadwal yang terbentuk untuk diekspor.');
@@ -781,7 +1001,6 @@ export const App: React.FC = () => {
     XLSX.writeFile(wb, `Jadwal_${schoolSlug}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  // Cetak PDF (Tetap Berfungsi Penuh Saat Offline)
   const handlePrintBatch = (mode: 'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS') => {
     setPrintMode(mode);
     setTimeout(() => {
@@ -928,8 +1147,8 @@ export const App: React.FC = () => {
                 <h1 className="font-bold text-base text-slate-900 leading-tight">
                   {schoolProfile?.school_name || 'Smart Timetable CSP'}
                 </h1>
-                
-                {/* Indikator Online/Offline Status */}
+
+                {/* Status Online / Offline */}
                 {isOnline ? (
                   <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
                     <Wifi className="w-3 h-3 text-emerald-600" />
@@ -938,8 +1157,33 @@ export const App: React.FC = () => {
                 ) : (
                   <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1">
                     <WifiOff className="w-3 h-3 text-amber-600" />
-                    <span>Mode Offline (Tersimpan Lokal)</span>
+                    <span>Offline (Lokal)</span>
                   </span>
+                )}
+
+                {/* Indikator Antrean Sinkronisasi */}
+                {pendingQueueCount > 0 && (
+                  <button
+                    onClick={triggerAutoSync}
+                    disabled={!isOnline || isSyncing}
+                    className={`px-2 py-0.5 text-[10px] font-bold rounded-full border flex items-center gap-1 transition ${
+                      isSyncing
+                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : isOnline
+                        ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 cursor-pointer animate-pulse'
+                        : 'bg-slate-100 text-slate-600 border-slate-300'
+                    }`}
+                    title="Klik untuk menyinkronkan data antrean sekarang"
+                  >
+                    {isSyncing ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                    ) : (
+                      <CloudUpload className="w-3 h-3 text-indigo-600" />
+                    )}
+                    <span>
+                      {isSyncing ? 'Menyinkronkan...' : `${pendingQueueCount} Perubahan Belum Sinkron`}
+                    </span>
+                  </button>
                 )}
               </div>
               <p className="text-xs text-slate-500">
@@ -949,19 +1193,19 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Tombol Install Aplikasi ke Layar Utama (PWA Fullscreen) */}
+            {/* Tombol Install Aplikasi (PWA) */}
             {isInstallable && (
               <button
                 onClick={handleInstallApp}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-400 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition shadow-sm animate-pulse"
-                title="Tambahkan pintasan ke layar utama HP/Tablet dengan tampilan Fullscreen"
+                title="Tambahkan aplikasi ke layar utama HP/Tablet untuk tampilan Fullscreen"
               >
                 <Download className="w-4 h-4 text-indigo-600" />
                 <span>Install Aplikasi</span>
               </button>
             )}
 
-            {/* Tombol Panel Token: Hanya Admin & Hanya Online */}
+            {/* Tombol Panel Token: Khusus Admin */}
             {isAdmin && (
               <button
                 onClick={() => setIsAdminModalOpen(true)}
@@ -971,7 +1215,7 @@ export const App: React.FC = () => {
                     ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
                     : 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900'
                 }`}
-                title={!isOnline ? 'Hanya dapat diakses saat online' : 'Generate dan kelola token akses sekolah'}
+                title={!isOnline ? 'Hanya dapat diakses saat online' : 'Generate dan kelola token'}
               >
                 <KeyRound className="w-4 h-4 text-amber-600" />
                 <span>Panel Token</span>
@@ -980,13 +1224,7 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsMasterModalOpen(true)}
-              disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
-                !isOnline
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
-              }`}
-              title={!isOnline ? 'Hanya dapat diubah saat online' : 'Kelola Guru, Mapel, Kelas, dan Ruangan'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
             >
               <Database className="w-4 h-4 text-emerald-600" />
               <span>Master Data</span>
@@ -1008,12 +1246,7 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsAssignmentModalOpen(true)}
-              disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
-                !isOnline
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold transition shadow-sm"
             >
               <UserCheck className="w-4 h-4 text-indigo-700" />
               <span>Penugasan Guru</span>
@@ -1026,12 +1259,7 @@ export const App: React.FC = () => {
                 }
                 setIsLessonModalOpen(true);
               }}
-              disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
-                !isOnline
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
             >
               <Layers className="w-4 h-4 text-indigo-600" />
               <span>Kartu Beban Mengajar</span>
@@ -1042,12 +1270,7 @@ export const App: React.FC = () => {
                 handleSelectAllActiveDays();
                 setIsSlotModalOpen(true);
               }}
-              disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
-                !isOnline
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
             >
               <Clock className="w-4 h-4 text-indigo-600" />
               <span>Hari & Jam</span>
@@ -1055,12 +1278,7 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsConstraintModalOpen(true)}
-              disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
-                !isOnline
-                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
             >
               <ShieldAlert className="w-4 h-4 text-amber-600" />
               <span>Syarat Jam Guru</span>
@@ -1072,7 +1290,7 @@ export const App: React.FC = () => {
               disabled={isGenerating || !isOnline}
               title={
                 !isOnline
-                  ? 'Mode Offline: Sambungkan ke internet untuk menyusun jadwal otomatis di cloud'
+                  ? 'Sambungkan ke internet untuk menyusun jadwal otomatis di cloud'
                   : 'Klik untuk membuat jadwal otomatis'
               }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
@@ -1108,14 +1326,24 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* BANNER NOTIFIKASI OFFLINE */}
+      {/* FEEDBACK STATUS SINKRONISASI */}
+      {syncFeedback && (
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
+          <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2 shadow-sm">
+            <CloudUpload className="w-4 h-4 text-blue-600 shrink-0" />
+            <span className="font-semibold">{syncFeedback}</span>
+          </div>
+        </div>
+      )}
+
+      {/* BANNER NOTIFIKASI MODE OFFLINE & ANTREAN */}
       {!isOnline && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between shadow-sm">
             <div className="flex items-center gap-2">
               <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
-                <strong>Aplikasi Sedang Dalam Mode Offline:</strong> Anda tetap dapat melihat jadwal per kelas/guru, mengekspor Excel, dan mencetak dokumen PDF. Fitur sinkronisasi server dan generate otomatis akan aktif kembali saat perangkat terhubung ke internet.
+                <strong>Mode Offline Aktif:</strong> Anda dapat melanjutkan pengaturan kartu mapel, hari & jam kerja, serta mencetak jadwal. Setiap perubahan disimpan ke antrean lokal ({pendingQueueCount} antrean) dan akan otomatis disinkronkan ke server begitu internet tersambung kembali.
               </span>
             </div>
           </div>
@@ -1174,7 +1402,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* TOOLBAR FILTER & MATRIKS (AKTIF OFFLINE & ONLINE) */}
+      {/* TOOLBAR FILTER & MATRIKS */}
       <main className="max-w-7xl mx-auto w-full px-6 py-4 flex-1 flex flex-col gap-4">
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3 print:hidden">
           <div className="flex items-center gap-2">
