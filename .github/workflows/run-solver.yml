@@ -4,18 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: 'Biarkan kosong jika dijalankan manual'
+        description: 'ID Job dari tabel generation_jobs'
         required: false
         default: ''
-  repository_dispatch:
-    types: [generate-timetable]
+      school_id:
+        description: 'UUID Sekolah (Tenant ID)'
+        required: false
+        default: ''
 
 jobs:
   solve:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./app
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -25,17 +24,23 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-          cache-dependency-path: 'app/requirements.txt'
 
       - name: Install OR-Tools & Supabase
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install ortools supabase
 
-      - name: Jalankan Perhitungan Jadwal
+      - name: Jalankan Perhitungan Jadwal Multi-Sekolah
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          GITHUB_ACTIONS: "true"
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
+          SCHOOL_ID: ${{ github.event.inputs.school_id }}
         run: |
-          JOB_ID="${{ github.event.inputs.job_id || github.event.client_payload.job_id }}"
-          python cli_solver.py "$JOB_ID"
+          if [ -f "solver/solver.py" ]; then
+            python solver/solver.py
+          elif [ -f "timetable-solver/solver.py" ]; then
+            python timetable-solver/solver.py
+          else
+            python solver.py
+          fi
