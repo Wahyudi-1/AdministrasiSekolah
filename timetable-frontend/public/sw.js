@@ -1,9 +1,5 @@
-const CACHE_NAME = 'smart-timetable-v2';
+const CACHE_NAME = 'smart-timetable-v3';
 const ASSETS_TO_CACHE = ['/', '/index.html', '/manifest.json'];
-
-// Ganti sesuai URL Project & Anon Key Supabase Anda
-const SUPABASE_URL = 'https://rvwgyovtqflguxgxdswb.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'; // Ganti dengan anon key Anda
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -36,7 +32,7 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// ==================== NATIVE BACKGROUND SYNC ====================
+// ==================== HELPER INDEXEDDB ====================
 
 function getIDBValue(dbName, storeName, key) {
   return new Promise((resolve, reject) => {
@@ -68,6 +64,8 @@ function clearIDBStore(dbName, storeName) {
   });
 }
 
+// ==================== NATIVE BACKGROUND SYNC ====================
+
 self.addEventListener('sync', (event) => {
   if (event.tag === 'sync-timetable-mutations') {
     event.waitUntil(processBackgroundSync());
@@ -76,17 +74,20 @@ self.addEventListener('sync', (event) => {
 
 async function processBackgroundSync() {
   try {
+    // 1. Ambil token JWT, konfigurasi Supabase (URL & Anon Key), dan antrean dari IndexedDB
     const token = await getIDBValue('SmartTimetableDB', 'auth', 'supabase_jwt');
+    const config = await getIDBValue('SmartTimetableDB', 'auth', 'supabase_config');
     const queue = (await getIDBValue('SmartTimetableDB', 'sync_queue', 'items')) || [];
 
-    if (!token || queue.length === 0) return;
+    // Jika konfigurasi, token, atau antrean belum siap, tunda proses
+    if (!token || !config?.url || !config?.anonKey || queue.length === 0) return;
 
-    // Tembak PostgREST RPC langsung tanpa supabase-js
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/process_offline_sync`, {
+    // 2. Eksekusi PostgREST RPC secara dinamis
+    const response = await fetch(`${config.url}/rest/v1/rpc/process_offline_sync`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
+        'apikey': config.anonKey,
         'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({ mutations: queue }),
@@ -100,10 +101,10 @@ async function processBackgroundSync() {
     const result = await response.json();
     console.log('[SW] Background Sync Selesai:', result);
 
-    // Kosongkan antrean setelah berhasil
+    // 3. Kosongkan antrean setelah berhasil
     await clearIDBStore('SmartTimetableDB', 'sync_queue');
 
-    // Beritahu jendela/tab aplikasi yang sedang aktif
+    // 4. Beri tahu jendela/tab aplikasi yang aktif
     const clients = await self.clients.matchAll();
     clients.forEach((client) => {
       client.postMessage({
@@ -113,8 +114,7 @@ async function processBackgroundSync() {
       });
     });
   } catch (error) {
-    console.error('[SW] Background sync gagal, akan dijadwalkan ulang oleh OS:', error);
-    // Melempar error agar browser melakukan retry otomatis
+    console.error('[SW] Background sync gagal, akan dijadwalkan ulang oleh browser:', error);
     throw error;
   }
 }
