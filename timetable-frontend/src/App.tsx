@@ -187,7 +187,6 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Listener untuk mengembalikan mode cetak setelah print dialog ditutup
   useEffect(() => {
     const handleAfterPrint = () => {
       setPrintMode('SINGLE');
@@ -204,7 +203,6 @@ export const App: React.FC = () => {
     }
   }, [filterMode, classes, teachers]);
 
-  // Kelompokkan penugasan berdasarkan kombinasi (Guru + Mapel)
   const uniqueSubjectTeacherPairs = useMemo(() => {
     const map = new Map<string, { teacherId: string; subjectId: string; totalPeriods: number }>();
     lessons.forEach((l) => {
@@ -586,10 +584,21 @@ export const App: React.FC = () => {
     }, 450);
   };
 
+  // Judul dinamis saat mode SINGLE dicetak
+  const currentSingleTitle = useMemo(() => {
+    if (filterMode === 'CLASS') {
+      const cls = classes.find((c) => c.id === selectedId);
+      return cls ? `JADWAL PELAJARAN — KELAS ${cls.class_name.toUpperCase()}` : 'JADWAL PELAJARAN';
+    } else {
+      const tch = teachers.find((t) => t.id === selectedId);
+      return tch ? `JADWAL MENGAJAR — ${tch.full_name.toUpperCase()} (${tch.teacher_code})` : 'JADWAL MENGAJAR';
+    }
+  }, [filterMode, selectedId, classes, teachers]);
+
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-800">
       
-      {/* ATURAN CSS PRINT KHUSUS (1 LEMBAR A4 LANSKAP PER KELAS / GURU) */}
+      {/* ATURAN CSS PRINT IDENTIK UNTUK SINGLE MAUPUN BATCH (1 LEMBAR UTUH PER KELAS/GURU) */}
       <style>{`
         @media print {
           @page {
@@ -599,7 +608,7 @@ export const App: React.FC = () => {
 
           html, body {
             width: 100% !important;
-            height: 100% !important;
+            height: auto !important;
             margin: 0 !important;
             padding: 0 !important;
             background: #ffffff !important;
@@ -607,8 +616,8 @@ export const App: React.FC = () => {
             print-color-adjust: exact !important;
           }
 
-          /* Hilangkan semua tombol, navigasi, dan header web */
-          header,
+          /* Sembunyikan elemen navigasi web */
+          header.app-navbar,
           nav,
           .print\\:hidden,
           button,
@@ -621,95 +630,114 @@ export const App: React.FC = () => {
             margin: 0 !important;
             max-width: none !important;
             width: 100% !important;
+            display: block !important;
           }
 
-          /* Wadah 1 Lembar Per Kelas / Guru */
+          /* Setiap print-sheet adalah 1 halaman penuh tanpa ruang kosong di atas */
           .print-sheet {
-            page-break-after: always !important;
-            break-after: page !important;
+            display: block !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
             page-break-inside: avoid !important;
             break-inside: avoid !important;
-            width: 100% !important;
-            height: 98vh !important;
-            max-height: 98vh !important;
+            page-break-after: always !important;
+            break-after: page !important;
+          }
+
+          .print-sheet:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
+
+          /* Judul Kop Cetak Kompak 1 Baris (Tidak Merentang) */
+          .sheet-header {
             display: flex !important;
-            flex-direction: column !important;
-            justify-content: flex-start !important;
-            box-sizing: border-box !important;
-            overflow: hidden !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            width: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            max-height: 28px !important;
+            margin: 0 0 4px 0 !important;
+            padding: 0 0 3px 0 !important;
+            border-bottom: 1.5px solid #0f172a !important;
+          }
+
+          .sheet-header h2 {
+            font-size: 10pt !important;
+            font-weight: 800 !important;
+            margin: 0 !important;
             padding: 0 !important;
+            line-height: 1.1 !important;
+            color: #0f172a !important;
+          }
+
+          .sheet-header span {
+            font-size: 7.5pt !important;
+            color: #475569 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+
+          /* Hilangkan pembungkus scroll dan bayangan pada TimetableGrid */
+          .print-sheet div {
+            overflow: visible !important;
+            box-shadow: none !important;
+            max-height: none !important;
+          }
+
+          /* Padatkan Tabel agar 11-12 Periode Muat dalam 1 Halaman */
+          .print-sheet table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
             margin: 0 !important;
           }
 
-          .print-header {
-            flex-shrink: 0 !important;
-            margin-bottom: 4px !important;
-            padding-bottom: 2px !important;
-          }
-
-          /* Tabel menyesuaikan tinggi halaman secara otomatis */
-          .print-sheet > div,
-          .print-sheet .timetable-container {
-            flex: 1 1 auto !important;
-            display: flex !important;
-            flex-direction: column !important;
-            height: 100% !important;
-            overflow: hidden !important;
-            border: none !important;
-            box-shadow: none !important;
-          }
-
-          .print-sheet table {
-            width: 100% !important;
-            height: calc(100% - 24px) !important;
-            border-collapse: collapse !important;
-            table-layout: fixed !important;
-          }
-
-          .print-sheet th,
-          .print-sheet td {
-            padding: 2px 3px !important;
-            font-size: 8.5pt !important;
-            line-height: 1.15 !important;
-            border: 1px solid #cbd5e1 !important;
+          .print-sheet tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
             height: auto !important;
-            min-height: 0 !important;
           }
 
           .print-sheet th {
             background-color: #0f172a !important;
             color: #ffffff !important;
-            font-weight: bold !important;
-            font-size: 8.5pt !important;
-            padding: 3px !important;
-            text-align: center !important;
+            font-size: 8pt !important;
+            font-weight: 700 !important;
+            padding: 3px 4px !important;
+            border: 1px solid #334155 !important;
           }
 
-          /* Format padat untuk kartu pelajaran */
+          .print-sheet td {
+            padding: 2px 3px !important;
+            border: 1px solid #cbd5e1 !important;
+            vertical-align: top !important;
+            height: auto !important;
+          }
+
+          /* Padatkan tinggi sel kartu di dalam TimetableGrid */
           .print-sheet td > div,
-          .print-sheet [class*="rounded"] {
+          .print-sheet [class*="min-h-"] {
             min-height: 0 !important;
-            padding: 1px 3px !important;
+            height: auto !important;
+            padding: 1.5px 3px !important;
             margin: 0 !important;
-            box-shadow: none !important;
           }
 
-          .print-sheet .font-bold {
-            font-size: 8.5pt !important;
-            line-height: 1.1 !important;
-          }
-
-          .print-sheet .text-xs,
-          .print-sheet .text-\\[10px\\],
-          .print-sheet .text-\\[11px\\] {
+          .print-sheet td p,
+          .print-sheet td span,
+          .print-sheet td div {
             font-size: 7.5pt !important;
-            line-height: 1 !important;
+            line-height: 1.1 !important;
           }
         }
       `}</style>
 
       {/* HEADER NAVIGASI UTAMA */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3.5 shadow-sm sticky top-0 z-40 print:hidden">
+      <header className="app-navbar bg-white border-b border-slate-200 px-6 py-3.5 shadow-sm sticky top-0 z-40 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-200">
@@ -952,10 +980,14 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* MATRIKS JADWAL DENGAN PEMBATAS 1 HALAMAN PER KELAS / GURU */}
+        {/* MATRIKS JADWAL DENGAN LAYOUT CETAK SERAGAM */}
         <div className="flex-1">
           {printMode === 'SINGLE' && (
             <div className="print-sheet">
+              <div className="sheet-header hidden print:flex">
+                <h2>{currentSingleTitle}</h2>
+                <span>Tahun Ajaran Aktif • sekolah.ewahyu.my.id</span>
+              </div>
               <TimetableGrid
                 workDays={workDays}
                 timeSlots={timeSlots}
@@ -973,21 +1005,12 @@ export const App: React.FC = () => {
           )}
 
           {printMode === 'ALL_CLASSES' && (
-            <div className="space-y-8 print:space-y-0">
+            <div>
               {classes.map((cls) => (
                 <div key={cls.id} className="print-sheet">
-                  <div className="print-header flex items-center justify-between border-b border-slate-300 pb-1 mb-1">
-                    <div>
-                      <h2 className="text-sm font-bold text-slate-900 tracking-wide">
-                        JADWAL PELAJARAN — KELAS {cls.class_name.toUpperCase()}
-                      </h2>
-                      <p className="text-[10px] text-slate-500">
-                        Tahun Ajaran Aktif • Smart Timetable CSP
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-mono font-semibold text-slate-400">
-                      sekolah.ewahyu.my.id
-                    </span>
+                  <div className="sheet-header">
+                    <h2>JADWAL PELAJARAN — KELAS {cls.class_name.toUpperCase()}</h2>
+                    <span>Tahun Ajaran Aktif • sekolah.ewahyu.my.id</span>
                   </div>
                   <TimetableGrid
                     workDays={workDays}
@@ -1007,21 +1030,14 @@ export const App: React.FC = () => {
           )}
 
           {printMode === 'ALL_TEACHERS' && (
-            <div className="space-y-8 print:space-y-0">
+            <div>
               {teachers.map((tch) => (
                 <div key={tch.id} className="print-sheet">
-                  <div className="print-header flex items-center justify-between border-b border-slate-300 pb-1 mb-1">
-                    <div>
-                      <h2 className="text-sm font-bold text-slate-900 tracking-wide">
-                        JADWAL MENGAJAR — {tch.full_name.toUpperCase()} ({tch.teacher_code})
-                      </h2>
-                      <p className="text-[10px] text-slate-500">
-                        Beban Mengajar Guru • Smart Timetable CSP
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-mono font-semibold text-slate-400">
-                      sekolah.ewahyu.my.id
-                    </span>
+                  <div className="sheet-header">
+                    <h2>
+                      JADWAL MENGAJAR — {tch.full_name.toUpperCase()} ({tch.teacher_code})
+                    </h2>
+                    <span>Beban Mengajar Guru • sekolah.ewahyu.my.id</span>
                   </div>
                   <TimetableGrid
                     workDays={workDays}
