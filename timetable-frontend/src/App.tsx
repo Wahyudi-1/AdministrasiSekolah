@@ -251,8 +251,17 @@ export const App: React.FC = () => {
     setDeferredPrompt(null);
   };
 
-  // Simpan JWT Session ke IndexedDB untuk dibaca Service Worker
+  // Simpan JWT Session dan Konfigurasi Supabase ke IndexedDB untuk dibaca sw.js
   useEffect(() => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    if (supabaseUrl && supabaseAnonKey) {
+      setIDBValue('auth', 'supabase_config', {
+        url: supabaseUrl,
+        anonKey: supabaseAnonKey,
+      });
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthChecking(false);
@@ -269,6 +278,15 @@ export const App: React.FC = () => {
         setIDBValue('auth', 'supabase_jwt', session.access_token);
       } else {
         setIDBValue('auth', 'supabase_jwt', null);
+      }
+      if (!session) {
+        setTeachers([]);
+        setClasses([]);
+        setSubjects([]);
+        setLessons([]);
+        setSchedules([]);
+        setSchoolProfile(null);
+        setPendingQueueCount(0);
       }
     });
 
@@ -835,7 +853,6 @@ export const App: React.FC = () => {
       return;
     }
 
-    // Jika data belum lengkap, tampilkan rincian peringatan & minta konfirmasi lanjutan
     if (!validationStatus.isValid) {
       const warningMessage =
         'PERINGATAN: Pengaturan data jadwal belum lengkap:\n\n' +
@@ -1234,7 +1251,6 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* FEEDBACK SINKRONISASI */}
       {syncFeedback && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2 shadow-sm">
