@@ -23,14 +23,20 @@ import {
   CheckSquare,
   Square,
   Lock,
+  LogOut,
+  KeyRound,
+  School,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { Session } from '@supabase/supabase-js';
 import { supabase } from './lib/supabaseClient';
 import { triggerScheduleGeneration } from './lib/solverApi';
 import { TimetableGrid } from './components/TimetableGrid';
 import { MasterDataModal } from './components/MasterDataModal';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { AssignmentModal } from './components/AssignmentModal';
+import { AuthPage } from './components/AuthPage';
+import { AdminTokenModal } from './components/AdminTokenModal';
 import {
   WorkDay,
   TimeSlot,
@@ -43,6 +49,15 @@ import {
 } from './types';
 
 export const App: React.FC = () => {
+  // State Autentikasi & Profil Sekolah Aktif
+  const [session, setSession] = useState<Session | null>(null);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
+  const [schoolProfile, setSchoolProfile] = useState<{
+    school_name: string;
+    full_name: string;
+    school_address: string;
+  } | null>(null);
+
   // State Master & Jadwal
   const [workDays, setWorkDays] = useState<WorkDay[]>([]);
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
@@ -65,8 +80,9 @@ export const App: React.FC = () => {
   const [isLessonModalOpen, setIsLessonModalOpen] = useState<boolean>(false);
   const [isSlotModalOpen, setIsSlotModalOpen] = useState<boolean>(false);
   const [isConstraintModalOpen, setIsConstraintModalOpen] = useState<boolean>(false);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
 
-  // State Konfigurasi Kartu Beban Mengajar (Pola & Ruangan Multi-Kelas)
+  // State Konfigurasi Kartu Beban Mengajar (Multi-Kelas)
   const [configAssignmentKey, setConfigAssignmentKey] = useState<string>('');
   const [configTargetClassIds, setConfigTargetClassIds] = useState<string[]>([]);
   const [configSplitPattern, setConfigSplitPattern] = useState<string>('2+2');
@@ -100,10 +116,39 @@ export const App: React.FC = () => {
     message: 'GitHub Actions Solver: Siap',
   });
 
-  // 1. Mengambil Semua Data dari Supabase
+  // 1. Pemeriksaan Sesi Login Supabase
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthChecking(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (!session) {
+        // Kosongkan state ketika logout
+        setTeachers([]);
+        setClasses([]);
+        setSubjects([]);
+        setLessons([]);
+        setSchedules([]);
+        setSchoolProfile(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 2. Mengambil Semua Data Milik Sekolah yang Sedang Login
   const fetchAllData = async () => {
+    if (!session?.user) return;
+    const schoolId = session.user.id;
+
     try {
       const [
+        profileRes,
         daysRes,
         slotsRes,
         teachersRes,
@@ -113,17 +158,37 @@ export const App: React.FC = () => {
         lessonsRes,
         schedulesRes,
       ] = await Promise.all([
-        supabase.from('work_days').select('*').order('day_index'),
-        supabase.from('time_slots').select('*').order('day_index').order('period_number'),
-        supabase.from('teachers').select('*').order('full_name'),
-        supabase.from('classes').select('*').order('grade_level').order('class_name'),
-        supabase.from('rooms').select('*').order('room_name'),
-        supabase.from('subjects').select('*').order('subject_name'),
-        supabase.from('lessons').select('*'),
-        supabase.from('schedules').select('*'),
+        supabase.from('schools').select('*').eq('id', schoolId).maybeSingle(),
+        supabase.from('work_days').select('*').eq('school_id', schoolId).order('day_index'),
+        supabase.from('time_slots').select('*').eq('school_id', schoolId).order('day_index').order('period_number'),
+        supabase.from('teachers').select('*').eq('school_id', schoolId).order('full_name'),
+        supabase.from('classes').select('*').eq('school_id', schoolId).order('grade_level').order('class_name'),
+        supabase.from('rooms').select('*').eq('school_id', schoolId).order('room_name'),
+        supabase.from('subjects').select('*').eq('school_id', schoolId).order('subject_name'),
+        supabase.from('lessons').select('*').eq('school_id', schoolId),
+        supabase.from('schedules').select('*').eq('school_id', schoolId),
       ]);
 
-      if (daysRes.data) setWorkDays(daysRes.data);
+      if (profileRes.data) {
+        setSchoolProfile(profileRes.data);
+      }
+
+      // Jika sekolah baru belum memiliki work_days, buatkan otomatis
+      if (daysRes.data && daysRes.data.length === 0) {
+        const defaultDays = [
+          { school_id: schoolId, day_index: 1, day_name: 'Senin', is_active: true },
+          { school_id: schoolId, day_index: 2, day_name: 'Selasa', is_active: true },
+          { school_id: schoolId, day_index: 3, day_name: 'Rabu', is_active: true },
+          { school_id: schoolId, day_index: 4, day_name: 'Kamis', is_active: true },
+          { school_id: schoolId, day_index: 5, day_name: 'Jumat', is_active: true },
+          { school_id: schoolId, day_index: 6, day_name: 'Sabtu', is_active: false },
+        ];
+        const { data: insertedDays } = await supabase.from('work_days').insert(defaultDays).select();
+        if (insertedDays) setWorkDays(insertedDays);
+      } else if (daysRes.data) {
+        setWorkDays(daysRes.data);
+      }
+
       if (slotsRes.data) setTimeSlots(slotsRes.data);
       if (teachersRes.data) {
         setTeachers(teachersRes.data);
@@ -140,18 +205,24 @@ export const App: React.FC = () => {
       if (lessonsRes.data) setLessons(lessonsRes.data);
       if (schedulesRes.data) setSchedules(schedulesRes.data);
     } catch (err: any) {
-      console.error('Gagal mengambil data:', err.message);
+      console.error('Gagal mengambil data sekolah:', err.message);
     }
   };
 
   useEffect(() => {
+    if (!session?.user) return;
     fetchAllData();
 
     const jobsChannel = supabase
       .channel('realtime_generation_jobs')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'generation_jobs' },
+        {
+          event: '*',
+          schema: 'public',
+          table: 'generation_jobs',
+          filter: `school_id=eq.${session.user.id}`,
+        },
         (payload: any) => {
           const row = payload.new;
           if (row) {
@@ -176,7 +247,12 @@ export const App: React.FC = () => {
       .channel('realtime_schedules')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'schedules' },
+        {
+          event: '*',
+          schema: 'public',
+          table: 'schedules',
+          filter: `school_id=eq.${session.user.id}`,
+        },
         () => fetchAllData()
       )
       .subscribe();
@@ -185,12 +261,10 @@ export const App: React.FC = () => {
       supabase.removeChannel(jobsChannel);
       supabase.removeChannel(schedulesChannel);
     };
-  }, []);
+  }, [session?.user?.id]);
 
   useEffect(() => {
-    const handleAfterPrint = () => {
-      setPrintMode('SINGLE');
-    };
+    const handleAfterPrint = () => setPrintMode('SINGLE');
     window.addEventListener('afterprint', handleAfterPrint);
     return () => window.removeEventListener('afterprint', handleAfterPrint);
   }, []);
@@ -202,6 +276,12 @@ export const App: React.FC = () => {
       if (!teachers.some((t) => t.id === selectedId)) setSelectedId(teachers[0].id);
     }
   }, [filterMode, classes, teachers]);
+
+  // Handler Logout
+  const handleLogout = async () => {
+    if (!confirm('Keluar dari sesi akun sekolah ini?')) return;
+    await supabase.auth.signOut();
+  };
 
   const uniqueSubjectTeacherPairs = useMemo(() => {
     const map = new Map<string, { teacherId: string; subjectId: string; totalPeriods: number }>();
@@ -218,7 +298,7 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // Validasi Kesiapan Tombol Generate
+  // Validasi Kesiapan Tombol Generate Jadwal
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
 
@@ -306,16 +386,9 @@ export const App: React.FC = () => {
 
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!configAssignmentKey) {
-      alert('Pilih penugasan guru dan mapel terlebih dahulu.');
-      return;
-    }
-    if (configTargetClassIds.length === 0) {
-      alert('Pilih minimal satu kelas tujuan.');
-      return;
-    }
+    if (!configAssignmentKey || configTargetClassIds.length === 0) return;
 
-    const [tId, sId] = configAssignmentKey.split('__');
+    const [, sId] = configAssignmentKey.split('__');
     const targetPair = uniqueSubjectTeacherPairs.find((p) => p.key === configAssignmentKey);
     const expectedTotalJP = targetPair?.totalPeriods || 4;
 
@@ -327,7 +400,7 @@ export const App: React.FC = () => {
 
     if (sum !== expectedTotalJP) {
       alert(
-        `Total jam pada pola pecah blok (${parts.join('+')} = ${sum} JP) tidak cocok dengan beban mata pelajaran (${expectedTotalJP} JP)!\n\nHarap sesuaikan pola agar jumlahnya tepat ${expectedTotalJP}.`
+        `Total jam pada pola pecah blok (${parts.join('+')} = ${sum} JP) tidak cocok dengan beban mata pelajaran (${expectedTotalJP} JP)!`
       );
       return;
     }
@@ -399,14 +472,12 @@ export const App: React.FC = () => {
 
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (targetDayIndices.length === 0) {
-      alert('Pilih minimal satu hari tujuan.');
-      return;
-    }
+    if (!session?.user || targetDayIndices.length === 0) return;
 
     setSavingSlot(true);
     try {
       const recordsToUpsert = targetDayIndices.map((dayIdx) => ({
+        school_id: session.user.id,
         day_index: dayIdx,
         period_number: Number(slotPeriod),
         slot_name: slotName.trim(),
@@ -417,7 +488,7 @@ export const App: React.FC = () => {
 
       const { error } = await supabase
         .from('time_slots')
-        .upsert(recordsToUpsert, { onConflict: 'day_index,period_number' });
+        .upsert(recordsToUpsert, { onConflict: 'school_id,day_index,period_number' });
 
       if (error) throw error;
       await fetchAllData();
@@ -430,25 +501,16 @@ export const App: React.FC = () => {
   };
 
   const handleResetAllSlots = async () => {
+    if (!session?.user) return;
     const konfirmasi = window.confirm(
-      'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran yang saat ini terpasang di matriks.\n\nApakah Anda yakin ingin mengosongkan semua slot waktu?'
+      'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran sekolah Anda yang saat ini terpasang di matriks.\n\nLanjutkan?'
     );
     if (!konfirmasi) return;
 
     setSavingSlot(true);
     try {
-      const { error: errSched } = await supabase
-        .from('schedules')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000');
-      if (errSched) throw errSched;
-
-      const { error: errSlots } = await supabase
-        .from('time_slots')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000');
-      if (errSlots) throw errSlots;
-
+      await supabase.from('schedules').delete().eq('school_id', session.user.id);
+      await supabase.from('time_slots').delete().eq('school_id', session.user.id);
       await fetchAllData();
       alert('Semua slot jam dan jadwal berhasil dikosongkan!');
     } catch (err: any) {
@@ -510,7 +572,7 @@ export const App: React.FC = () => {
       return;
     }
 
-    if (!confirm('Seluruh data guru, rombel kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin Google OR-Tools di GitHub Actions untuk membuat jadwal otomatis anti-bentrok?')) {
+    if (!confirm('Jalankan mesin Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?')) {
       return;
     }
 
@@ -574,7 +636,8 @@ export const App: React.FC = () => {
       XLSX.utils.book_append_sheet(wb, ws, `Kelas ${cls.class_name}`.slice(0, 31));
     });
 
-    XLSX.writeFile(wb, `Master_Jadwal_Pelajaran_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const schoolSlug = schoolProfile?.school_name?.replace(/\s+/g, '_') || 'Sekolah';
+    XLSX.writeFile(wb, `Jadwal_${schoolSlug}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const handlePrintBatch = (mode: 'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS') => {
@@ -584,28 +647,40 @@ export const App: React.FC = () => {
     }, 450);
   };
 
-  // Judul dinamis saat mode SINGLE dicetak
   const currentSingleTitle = useMemo(() => {
+    const prefix = schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : '';
     if (filterMode === 'CLASS') {
       const cls = classes.find((c) => c.id === selectedId);
-      return cls ? `JADWAL PELAJARAN — KELAS ${cls.class_name.toUpperCase()}` : 'JADWAL PELAJARAN';
+      return cls ? `${prefix}JADWAL KELAS ${cls.class_name.toUpperCase()}` : 'JADWAL PELAJARAN';
     } else {
       const tch = teachers.find((t) => t.id === selectedId);
-      return tch ? `JADWAL MENGAJAR — ${tch.full_name.toUpperCase()} (${tch.teacher_code})` : 'JADWAL MENGAJAR';
+      return tch ? `${prefix}JADWAL MENGAJAR: ${tch.full_name.toUpperCase()}` : 'JADWAL MENGAJAR';
     }
-  }, [filterMode, selectedId, classes, teachers]);
+  }, [filterMode, selectedId, classes, teachers, schoolProfile]);
+
+  // Tampilan Loading Sesi Awal
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm gap-2">
+        <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+        <span>Memeriksa sesi autentikasi sekolah...</span>
+      </div>
+    );
+  }
+
+  // Jika Belum Login, Tampilkan Halaman Login / Registrasi Token
+  if (!session) {
+    return <AuthPage onAuthSuccess={fetchAllData} />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-800">
-      
-      {/* ATURAN CSS PRINT IDENTIK UNTUK SINGLE MAUPUN BATCH (1 LEMBAR UTUH PER KELAS/GURU) */}
       <style>{`
         @media print {
           @page {
             size: A4 landscape;
             margin: 5mm 6mm;
           }
-
           html, body {
             width: 100% !important;
             height: auto !important;
@@ -615,16 +690,9 @@ export const App: React.FC = () => {
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
-
-          /* Sembunyikan elemen navigasi web */
-          header.app-navbar,
-          nav,
-          .print\\:hidden,
-          button,
-          .no-print {
+          header.app-navbar, nav, .print\\:hidden, button, .no-print {
             display: none !important;
           }
-
           main {
             padding: 0 !important;
             margin: 0 !important;
@@ -632,8 +700,6 @@ export const App: React.FC = () => {
             width: 100% !important;
             display: block !important;
           }
-
-          /* Setiap print-sheet adalah 1 halaman penuh tanpa ruang kosong di atas */
           .print-sheet {
             display: block !important;
             width: 100% !important;
@@ -644,13 +710,10 @@ export const App: React.FC = () => {
             page-break-after: always !important;
             break-after: page !important;
           }
-
           .print-sheet:last-child {
             page-break-after: auto !important;
             break-after: auto !important;
           }
-
-          /* Judul Kop Cetak Kompak 1 Baris (Tidak Merentang) */
           .sheet-header {
             display: flex !important;
             flex-direction: row !important;
@@ -658,50 +721,35 @@ export const App: React.FC = () => {
             justify-content: space-between !important;
             width: 100% !important;
             height: auto !important;
-            min-height: 0 !important;
             max-height: 28px !important;
             margin: 0 0 4px 0 !important;
             padding: 0 0 3px 0 !important;
             border-bottom: 1.5px solid #0f172a !important;
           }
-
           .sheet-header h2 {
             font-size: 10pt !important;
             font-weight: 800 !important;
             margin: 0 !important;
-            padding: 0 !important;
-            line-height: 1.1 !important;
             color: #0f172a !important;
           }
-
           .sheet-header span {
             font-size: 7.5pt !important;
             color: #475569 !important;
-            margin: 0 !important;
-            padding: 0 !important;
           }
-
-          /* Hilangkan pembungkus scroll dan bayangan pada TimetableGrid */
           .print-sheet div {
             overflow: visible !important;
             box-shadow: none !important;
             max-height: none !important;
           }
-
-          /* Padatkan Tabel agar 11-12 Periode Muat dalam 1 Halaman */
           .print-sheet table {
             width: 100% !important;
             border-collapse: collapse !important;
             table-layout: fixed !important;
-            margin: 0 !important;
           }
-
           .print-sheet tr {
             page-break-inside: avoid !important;
             break-inside: avoid !important;
-            height: auto !important;
           }
-
           .print-sheet th {
             background-color: #0f172a !important;
             color: #ffffff !important;
@@ -710,26 +758,18 @@ export const App: React.FC = () => {
             padding: 3px 4px !important;
             border: 1px solid #334155 !important;
           }
-
           .print-sheet td {
             padding: 2px 3px !important;
             border: 1px solid #cbd5e1 !important;
             vertical-align: top !important;
-            height: auto !important;
           }
-
-          /* Padatkan tinggi sel kartu di dalam TimetableGrid */
-          .print-sheet td > div,
-          .print-sheet [class*="min-h-"] {
+          .print-sheet td > div, .print-sheet [class*="min-h-"] {
             min-height: 0 !important;
             height: auto !important;
             padding: 1.5px 3px !important;
             margin: 0 !important;
           }
-
-          .print-sheet td p,
-          .print-sheet td span,
-          .print-sheet td div {
+          .print-sheet td p, .print-sheet td span, .print-sheet td div {
             font-size: 7.5pt !important;
             line-height: 1.1 !important;
           }
@@ -737,26 +777,38 @@ export const App: React.FC = () => {
       `}</style>
 
       {/* HEADER NAVIGASI UTAMA */}
-      <header className="app-navbar bg-white border-b border-slate-200 px-6 py-3.5 shadow-sm sticky top-0 z-40 print:hidden">
+      <header className="app-navbar bg-white border-b border-slate-200 px-6 py-3 shadow-sm sticky top-0 z-40 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-200">
-              <Calendar className="w-6 h-6" />
+              <School className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="font-bold text-base text-slate-900 leading-tight">Smart Timetable CSP</h1>
+                <h1 className="font-bold text-base text-slate-900 leading-tight">
+                  {schoolProfile?.school_name || 'Smart Timetable CSP'}
+                </h1>
                 <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                   {jobStatus.message}
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                Penjadwalan Otomatis Anti-Bentrok (Supabase + GitHub Actions OR-Tools)
+                User: <span className="font-semibold text-slate-700">{schoolProfile?.full_name || session.user.email}</span>
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Tombol Panel Token Admin */}
+            <button
+              onClick={() => setIsAdminModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold transition shadow-sm"
+              title="Generate dan kelola token akses sekolah"
+            >
+              <KeyRound className="w-4 h-4 text-amber-600" />
+              <span>Panel Token</span>
+            </button>
+
             <button
               onClick={() => setIsMasterModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
@@ -816,16 +868,11 @@ export const App: React.FC = () => {
             <button
               onClick={handleTriggerSolver}
               disabled={isGenerating || !validationStatus.isValid}
-              title={
-                !validationStatus.isValid
-                  ? 'Belum dapat dijalankan:\n• ' + validationStatus.issues.join('\n• ')
-                  : 'Klik untuk membuat jadwal otomatis'
-              }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isGenerating
                   ? 'bg-slate-400 text-white cursor-not-allowed'
                   : !validationStatus.isValid
-                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed hover:bg-slate-200'
+                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
                   : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 cursor-pointer'
               }`}
             >
@@ -845,6 +892,16 @@ export const App: React.FC = () => {
                   <span>Generate Jadwal Otomatis</span>
                 </>
               )}
+            </button>
+
+            {/* Tombol Logout */}
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition"
+              title="Keluar dari akun sekolah"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Keluar</span>
             </button>
           </div>
         </div>
@@ -980,13 +1037,13 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* MATRIKS JADWAL DENGAN LAYOUT CETAK SERAGAM */}
+        {/* MATRIKS JADWAL */}
         <div className="flex-1">
           {printMode === 'SINGLE' && (
             <div className="print-sheet">
               <div className="sheet-header hidden print:flex">
                 <h2>{currentSingleTitle}</h2>
-                <span>Tahun Ajaran Aktif • sekolah.ewahyu.my.id</span>
+                <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
               </div>
               <TimetableGrid
                 workDays={workDays}
@@ -1009,8 +1066,11 @@ export const App: React.FC = () => {
               {classes.map((cls) => (
                 <div key={cls.id} className="print-sheet">
                   <div className="sheet-header">
-                    <h2>JADWAL PELAJARAN — KELAS {cls.class_name.toUpperCase()}</h2>
-                    <span>Tahun Ajaran Aktif • sekolah.ewahyu.my.id</span>
+                    <h2>
+                      {schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : ''}
+                      JADWAL PELAJARAN KELAS {cls.class_name.toUpperCase()}
+                    </h2>
+                    <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
                   </div>
                   <TimetableGrid
                     workDays={workDays}
@@ -1035,9 +1095,10 @@ export const App: React.FC = () => {
                 <div key={tch.id} className="print-sheet">
                   <div className="sheet-header">
                     <h2>
-                      JADWAL MENGAJAR — {tch.full_name.toUpperCase()} ({tch.teacher_code})
+                      {schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : ''}
+                      JADWAL MENGAJAR: {tch.full_name.toUpperCase()} ({tch.teacher_code})
                     </h2>
-                    <span>Beban Mengajar Guru • sekolah.ewahyu.my.id</span>
+                    <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
                   </div>
                   <TimetableGrid
                     workDays={workDays}
@@ -1058,7 +1119,10 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL 1: MASTER DATA */}
+      {/* MODAL ADMIN TOKEN */}
+      <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />
+
+      {/* MODAL MASTER DATA */}
       <MasterDataModal
         isOpen={isMasterModalOpen}
         onClose={() => setIsMasterModalOpen(false)}
@@ -1069,14 +1133,14 @@ export const App: React.FC = () => {
         onDataUpdated={fetchAllData}
       />
 
-      {/* MODAL 2: IMPORT EXCEL */}
+      {/* MODAL IMPORT EXCEL */}
       <ExcelImportModal
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onDataImported={fetchAllData}
       />
 
-      {/* MODAL 3: PENUGASAN GURU */}
+      {/* MODAL PENUGASAN GURU */}
       <AssignmentModal
         isOpen={isAssignmentModalOpen}
         onClose={() => setIsAssignmentModalOpen(false)}
@@ -1087,7 +1151,7 @@ export const App: React.FC = () => {
         onDataUpdated={fetchAllData}
       />
 
-      {/* MODAL 4: KARTU BEBAN MENGAJAR */}
+      {/* MODAL KARTU BEBAN MENGAJAR */}
       {isLessonModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
@@ -1147,9 +1211,7 @@ export const App: React.FC = () => {
 
                 <div className="pt-2 border-t border-slate-200">
                   <div className="flex items-center justify-between mb-2">
-                    <label className="block font-bold text-slate-700">
-                      Terapkan Pengaturan ke Kelas:
-                    </label>
+                    <label className="block font-bold text-slate-700">Terapkan Pengaturan ke Kelas:</label>
                     <div className="flex gap-2">
                       <button
                         type="button"
@@ -1209,9 +1271,7 @@ export const App: React.FC = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-200">
                   <div>
-                    <label className="block font-bold text-slate-700 mb-1">
-                      Pola Pecah Blok (Split)
-                    </label>
+                    <label className="block font-bold text-slate-700 mb-1">Pola Pecah Blok (Split)</label>
                     <input
                       type="text"
                       value={configSplitPattern}
@@ -1302,14 +1362,12 @@ export const App: React.FC = () => {
                       <button
                         onClick={() => handleEditSingleLesson(l)}
                         className="text-slate-400 hover:text-amber-600 p-1"
-                        title="Edit Pola & Ruangan Kartu Ini"
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => handleDeleteLesson(l.id)}
                         className="text-slate-400 hover:text-rose-600 p-1"
-                        title="Hapus Kartu Ini"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -1322,7 +1380,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 5: SLOT JAM */}
+      {/* MODAL SLOT JAM */}
       {isSlotModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden p-6 space-y-5 text-xs">
@@ -1503,7 +1561,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 6: SYARAT JAM GURU */}
+      {/* MODAL SYARAT JAM GURU */}
       {isConstraintModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden p-6 space-y-4 text-xs">
