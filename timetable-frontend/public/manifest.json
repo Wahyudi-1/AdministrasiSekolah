@@ -1,0 +1,23 @@
+{
+  "short_name": "SmartTimetable",
+  "name": "Smart Timetable CSP - Penjadwalan Sekolah",
+  "icons": [
+    {
+      "src": "pwa-192x192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "pwa-512x512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "display": "fullscreen",
+  "orientation": "landscape-primary"
+}
