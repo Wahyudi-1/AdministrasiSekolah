@@ -117,9 +117,7 @@ export const App: React.FC = () => {
         supabase.from('schedules').select('*'),
       ]);
 
-      if (daysRes.data) {
-        setWorkDays(daysRes.data);
-      }
+      if (daysRes.data) setWorkDays(daysRes.data);
       if (slotsRes.data) setTimeSlots(slotsRes.data);
       if (teachersRes.data) {
         setTeachers(teachersRes.data);
@@ -257,6 +255,38 @@ export const App: React.FC = () => {
       alert(`Berhasil menyimpan "${slotName}" untuk ${targetDayIndices.length} hari kerja!`);
     } catch (err: any) {
       alert(`Gagal menyimpan slot waktu: ${err.message}`);
+    } finally {
+      setSavingSlot(false);
+    }
+  };
+
+  // Reset / Hapus Seluruh Slot Waktu & Bersihkan Matriks Jadwal
+  const handleResetAllSlots = async () => {
+    const konfirmasi = window.confirm(
+      'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran yang saat ini terpasang di matriks.\n\nApakah Anda yakin ingin mengosongkan semua slot waktu?'
+    );
+    if (!konfirmasi) return;
+
+    setSavingSlot(true);
+    try {
+      // 1. Bersihkan tabel schedules terlebih dahulu agar tidak melanggar foreign key
+      const { error: errSched } = await supabase
+        .from('schedules')
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000');
+      if (errSched) throw errSched;
+
+      // 2. Hapus seluruh baris di time_slots
+      const { error: errSlots } = await supabase
+        .from('time_slots')
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000');
+      if (errSlots) throw errSlots;
+
+      await fetchAllData();
+      alert('Semua slot jam dan jadwal berhasil dikosongkan!');
+    } catch (err: any) {
+      alert(`Gagal mengosongkan slot jam: ${err.message}`);
     } finally {
       setSavingSlot(false);
     }
@@ -741,7 +771,7 @@ export const App: React.FC = () => {
         onDataImported={fetchAllData}
       />
 
-      {/* MODAL 3: KONFIGURASI HARI KERJA & SLOT JAM (DILENGKAPI MULTI-PILIHAN HARI) */}
+      {/* MODAL 3: KONFIGURASI HARI KERJA & SLOT JAM */}
       {isSlotModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden p-6 space-y-5 text-xs">
@@ -751,7 +781,7 @@ export const App: React.FC = () => {
                   Konfigurasi Hari Kerja & Slot Jam (Pre / Formal / Post)
                 </h2>
                 <p className="text-slate-400 text-[11px] mt-0.5">
-                  Atur hari aktif sekolah dan tambahkan slot waktu ke beberapa hari sekaligus
+                  Atur hari aktif sekolah dan terapkan slot waktu ke beberapa hari sekaligus
                 </p>
               </div>
               <button onClick={() => setIsSlotModalOpen(false)}>
@@ -784,7 +814,6 @@ export const App: React.FC = () => {
 
             {/* Formulir Tambah Slot Jam dengan Multi-Pilihan Hari */}
             <form onSubmit={handleSaveSlot} className="space-y-3.5 border-t pt-4">
-              {/* Pemilihan Multi-Hari Target */}
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="block font-bold text-slate-700">
@@ -897,27 +926,41 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-3">
+              {/* FOOTER MODAL DENGAN TOMBOL KOSONGKAN SEMUA */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t">
                 <button
                   type="button"
-                  onClick={() => setIsSlotModalOpen(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 font-semibold text-slate-700"
+                  onClick={handleResetAllSlots}
+                  disabled={savingSlot}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-xs transition disabled:opacity-50"
+                  title="Hapus seluruh slot waktu dan reset jadwal di matriks"
                 >
-                  Tutup
+                  <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Kosongkan Semua Slot Jam</span>
                 </button>
-                <button
-                  type="submit"
-                  disabled={savingSlot || targetDayIndices.length === 0}
-                  className={`px-5 py-2 rounded-lg text-white font-bold transition ${
-                    savingSlot || targetDayIndices.length === 0
-                      ? 'bg-slate-300 cursor-not-allowed'
-                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
-                  }`}
-                >
-                  {savingSlot
-                    ? 'Menyimpan...'
-                    : `Simpan Slot Waktu (${targetDayIndices.length} Hari Terpilih)`}
-                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSlotModalOpen(false)}
+                    className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 font-semibold text-slate-700"
+                  >
+                    Tutup
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingSlot || targetDayIndices.length === 0}
+                    className={`px-5 py-2 rounded-lg text-white font-bold transition ${
+                      savingSlot || targetDayIndices.length === 0
+                        ? 'bg-slate-300 cursor-not-allowed'
+                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
+                    }`}
+                  >
+                    {savingSlot
+                      ? 'Menyimpan...'
+                      : `Simpan Slot Waktu (${targetDayIndices.length} Hari Terpilih)`}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
