@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   X,
   Trash2,
+  Check,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabaseClient';
@@ -57,8 +58,8 @@ export const App: React.FC = () => {
   const [isConstraintModalOpen, setIsConstraintModalOpen] = useState<boolean>(false);
   const [isLessonModalOpen, setIsLessonModalOpen] = useState<boolean>(false);
 
-  // State Form Slot Waktu (Hari & Jam)
-  const [slotDayIndex, setSlotDayIndex] = useState<number>(1);
+  // State Form Slot Waktu (Mendukung Multi-Hari)
+  const [targetDayIndices, setTargetDayIndices] = useState<number[]>([1, 2, 3, 4, 5]);
   const [slotPeriod, setSlotPeriod] = useState<number>(1);
   const [slotName, setSlotName] = useState<string>('Jam ke-1');
   const [slotStart, setSlotStart] = useState<string>('07:00');
@@ -116,7 +117,9 @@ export const App: React.FC = () => {
         supabase.from('schedules').select('*'),
       ]);
 
-      if (daysRes.data) setWorkDays(daysRes.data);
+      if (daysRes.data) {
+        setWorkDays(daysRes.data);
+      }
       if (slotsRes.data) setTimeSlots(slotsRes.data);
       if (teachersRes.data) {
         setTeachers(teachersRes.data);
@@ -205,7 +208,7 @@ export const App: React.FC = () => {
     }
   }, [filterMode, classes, teachers]);
 
-  // Toggle Hari Aktif
+  // Toggle Hari Aktif di Sekolah (Senin - Sabtu)
   const handleToggleDay = async (day: WorkDay) => {
     const { error } = await supabase
       .from('work_days')
@@ -214,26 +217,44 @@ export const App: React.FC = () => {
     if (!error) fetchAllData();
   };
 
-  // Simpan Slot Waktu
+  // Toggle Pilihan Hari Target untuk Slot Jam
+  const handleToggleTargetDay = (dayIndex: number) => {
+    setTargetDayIndices((prev) =>
+      prev.includes(dayIndex) ? prev.filter((d) => d !== dayIndex) : [...prev, dayIndex]
+    );
+  };
+
+  const handleSelectAllActiveDays = () => {
+    const activeIndices = workDays.filter((d) => d.is_active).map((d) => d.day_index);
+    setTargetDayIndices(activeIndices);
+  };
+
+  // Simpan Slot Waktu Massal ke Beberapa Hari Sekaligus
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (targetDayIndices.length === 0) {
+      alert('Pilih minimal satu hari tujuan.');
+      return;
+    }
+
     setSavingSlot(true);
     try {
-      const { error } = await supabase.from('time_slots').upsert(
-        [
-          {
-            day_index: Number(slotDayIndex),
-            period_number: Number(slotPeriod),
-            slot_name: slotName.trim(),
-            start_time: slotStart,
-            end_time: slotEnd,
-            slot_type: slotType,
-          },
-        ],
-        { onConflict: 'day_index,period_number' }
-      );
+      const recordsToUpsert = targetDayIndices.map((dayIdx) => ({
+        day_index: dayIdx,
+        period_number: Number(slotPeriod),
+        slot_name: slotName.trim(),
+        start_time: slotStart,
+        end_time: slotEnd,
+        slot_type: slotType,
+      }));
+
+      const { error } = await supabase
+        .from('time_slots')
+        .upsert(recordsToUpsert, { onConflict: 'day_index,period_number' });
+
       if (error) throw error;
       await fetchAllData();
+      alert(`Berhasil menyimpan "${slotName}" untuk ${targetDayIndices.length} hari kerja!`);
     } catch (err: any) {
       alert(`Gagal menyimpan slot waktu: ${err.message}`);
     } finally {
@@ -413,7 +434,7 @@ export const App: React.FC = () => {
     XLSX.writeFile(wb, `Master_Jadwal_Pelajaran_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  // Cetak PDF Massal (Seluruh Kelas / Seluruh Guru)
+  // Cetak PDF Massal
   const handlePrintBatch = (mode: 'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS') => {
     setPrintMode(mode);
     setTimeout(() => {
@@ -446,7 +467,6 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Tombol Aksi Pengaturan & Master Data */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setIsMasterModalOpen(true)}
@@ -465,7 +485,10 @@ export const App: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setIsSlotModalOpen(true)}
+              onClick={() => {
+                handleSelectAllActiveDays();
+                setIsSlotModalOpen(true);
+              }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
             >
               <Clock className="w-4 h-4 text-indigo-600" />
@@ -700,7 +723,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL 1: MASTER DATA (GURU, MAPEL, KELAS, RUANGAN KHUSUS) */}
+      {/* MODAL 1: MASTER DATA */}
       <MasterDataModal
         isOpen={isMasterModalOpen}
         onClose={() => setIsMasterModalOpen(false)}
@@ -711,29 +734,35 @@ export const App: React.FC = () => {
         onDataUpdated={fetchAllData}
       />
 
-      {/* MODAL 2: IMPORT EXCEL MASSAL */}
+      {/* MODAL 2: IMPORT EXCEL */}
       <ExcelImportModal
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onDataImported={fetchAllData}
       />
 
-      {/* MODAL 3: KONFIGURASI HARI KERJA & SLOT JAM */}
+      {/* MODAL 3: KONFIGURASI HARI KERJA & SLOT JAM (DILENGKAPI MULTI-PILIHAN HARI) */}
       {isSlotModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden p-6 space-y-5 text-xs">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden p-6 space-y-5 text-xs">
             <div className="flex items-center justify-between border-b pb-3">
-              <h2 className="text-base font-bold text-slate-900">
-                Konfigurasi Hari Kerja & Slot Jam (Pre / Formal / Post)
-              </h2>
+              <div>
+                <h2 className="text-base font-bold text-slate-900">
+                  Konfigurasi Hari Kerja & Slot Jam (Pre / Formal / Post)
+                </h2>
+                <p className="text-slate-400 text-[11px] mt-0.5">
+                  Atur hari aktif sekolah dan tambahkan slot waktu ke beberapa hari sekaligus
+                </p>
+              </div>
               <button onClick={() => setIsSlotModalOpen(false)}>
                 <X className="w-5 h-5 text-slate-400 hover:text-slate-700" />
               </button>
             </div>
 
+            {/* Bagian Hari Kerja Aktif Sekolah */}
             <div>
               <label className="block font-bold text-slate-500 uppercase mb-2">
-                Hari Kerja Aktif
+                Hari Kerja Aktif Sekolah
               </label>
               <div className="flex flex-wrap gap-2">
                 {workDays.map((d) => (
@@ -753,24 +782,63 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            <form onSubmit={handleSaveSlot} className="space-y-3 border-t pt-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold mb-1">Pilih Hari</label>
-                  <select
-                    value={slotDayIndex}
-                    onChange={(e) => setSlotDayIndex(Number(e.target.value))}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  >
-                    {workDays
-                      .filter((d) => d.is_active)
-                      .map((d) => (
-                        <option key={d.id} value={d.day_index}>
-                          {d.day_name}
-                        </option>
-                      ))}
-                  </select>
+            {/* Formulir Tambah Slot Jam dengan Multi-Pilihan Hari */}
+            <form onSubmit={handleSaveSlot} className="space-y-3.5 border-t pt-4">
+              {/* Pemilihan Multi-Hari Target */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block font-bold text-slate-700">
+                    Terapkan Slot Ini ke Hari:
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSelectAllActiveDays}
+                      className="text-[11px] text-indigo-600 hover:underline font-semibold"
+                    >
+                      Pilih Semua Hari Aktif
+                    </button>
+                    <span className="text-slate-300">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setTargetDayIndices([])}
+                      className="text-[11px] text-rose-600 hover:underline font-semibold"
+                    >
+                      Kosongkan
+                    </button>
+                  </div>
                 </div>
+
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {workDays
+                    .filter((d) => d.is_active)
+                    .map((d) => {
+                      const isSelected = targetDayIndices.includes(d.day_index);
+                      return (
+                        <button
+                          key={d.id}
+                          type="button"
+                          onClick={() => handleToggleTargetDay(d.day_index)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 ${
+                            isSelected
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                              : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>{d.day_name}</span>
+                          {isSelected && <Check className="w-3.5 h-3.5" />}
+                        </button>
+                      );
+                    })}
+                </div>
+                {targetDayIndices.length === 0 && (
+                  <p className="text-[11px] text-rose-600 font-semibold">
+                    * Pilih minimal satu hari tujuan penerapan.
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold mb-1">Periode Ke-</label>
                   <input
@@ -779,19 +847,7 @@ export const App: React.FC = () => {
                     max={16}
                     value={slotPeriod}
                     onChange={(e) => setSlotPeriod(Number(e.target.value))}
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold mb-1">Label Slot</label>
-                  <input
-                    type="text"
-                    value={slotName}
-                    onChange={(e) => setSlotName(e.target.value)}
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2 border rounded-lg bg-white"
                   />
                 </div>
                 <div>
@@ -801,12 +857,23 @@ export const App: React.FC = () => {
                     onChange={(e) => setSlotType(e.target.value as any)}
                     className="w-full p-2 border rounded-lg bg-white"
                   >
-                    <option value="PRE">PRE (Pra-KBM / Pagi)</option>
                     <option value="FORMAL">FORMAL (KBM Inti)</option>
+                    <option value="PRE">PRE (Pra-KBM / Pagi)</option>
                     <option value="POST">POST (Ekskul / Sore)</option>
                     <option value="BREAK">BREAK (Istirahat)</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Label Slot</label>
+                <input
+                  type="text"
+                  value={slotName}
+                  onChange={(e) => setSlotName(e.target.value)}
+                  placeholder="Contoh: Jam ke-1 / Istirahat Siang"
+                  className="w-full p-2 border rounded-lg bg-white"
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -816,7 +883,7 @@ export const App: React.FC = () => {
                     type="time"
                     value={slotStart}
                     onChange={(e) => setSlotStart(e.target.value)}
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2 border rounded-lg bg-white"
                   />
                 </div>
                 <div>
@@ -825,7 +892,7 @@ export const App: React.FC = () => {
                     type="time"
                     value={slotEnd}
                     onChange={(e) => setSlotEnd(e.target.value)}
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2 border rounded-lg bg-white"
                   />
                 </div>
               </div>
@@ -834,16 +901,22 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsSlotModalOpen(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 font-semibold"
+                  className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 font-semibold text-slate-700"
                 >
                   Tutup
                 </button>
                 <button
                   type="submit"
-                  disabled={savingSlot}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold"
+                  disabled={savingSlot || targetDayIndices.length === 0}
+                  className={`px-5 py-2 rounded-lg text-white font-bold transition ${
+                    savingSlot || targetDayIndices.length === 0
+                      ? 'bg-slate-300 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
+                  }`}
                 >
-                  {savingSlot ? 'Menyimpan...' : 'Simpan Slot Waktu'}
+                  {savingSlot
+                    ? 'Menyimpan...'
+                    : `Simpan Slot Waktu (${targetDayIndices.length} Hari Terpilih)`}
                 </button>
               </div>
             </form>
@@ -851,7 +924,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 4: SYARAT JAM GURU (UNAVAILABLE SLOTS) */}
+      {/* MODAL 4: SYARAT JAM GURU */}
       {isConstraintModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden p-6 space-y-4 text-xs">
@@ -1069,7 +1142,6 @@ export const App: React.FC = () => {
               </button>
             </form>
 
-            {/* Daftar Kartu Mapel yang Sudah Ada */}
             <div className="border-t pt-3 overflow-y-auto flex-1 space-y-1.5">
               <p className="font-bold text-slate-600 mb-1">
                 Daftar Kartu Mapel Terdaftar ({lessons.length})
