@@ -58,6 +58,7 @@ import {
   ScheduleItem,
 } from './types';
 
+// Daftar email pemilik database yang berhak mengelola token
 const ADMIN_EMAILS = ['joedie.meyson@gmail.com'];
 
 export const App: React.FC = () => {
@@ -138,6 +139,7 @@ export const App: React.FC = () => {
     message: 'GitHub Actions Solver: Siap',
   });
 
+  // Validasi Hak Akses Admin
   const isAdmin = useMemo(() => {
     if (!session?.user?.email) return false;
     return ADMIN_EMAILS.map((email) => email.toLowerCase()).includes(
@@ -196,7 +198,7 @@ export const App: React.FC = () => {
     }
   }, [session?.user?.id, isSyncing, refreshQueueCount, checkConflictCount]);
 
-  // Listener Service Worker PostMessage & Online status
+  // Listener PWA & Perubahan Status Jaringan
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
@@ -249,7 +251,7 @@ export const App: React.FC = () => {
     setDeferredPrompt(null);
   };
 
-  // Simpan JWT Session ke IndexedDB agar dapat digunakan Service Worker
+  // Simpan JWT Session ke IndexedDB untuk dibaca Service Worker
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -454,13 +456,66 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
+  // Validasi Kelengkapan Data
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
+
     if (teachers.length === 0) issues.push('Belum ada data Guru di Master Data.');
     if (classes.length === 0) issues.push('Belum ada data Kelas di Master Data.');
     if (subjects.length === 0) issues.push('Belum ada data Mata Pelajaran.');
     if (timeSlots.length === 0) issues.push('Slot Hari & Jam belum dikonfigurasi.');
     if (lessons.length === 0) issues.push('Belum ada Kartu Beban Mengajar yang dibuat.');
+
+    if (teachers.length > 0 && lessons.length > 0) {
+      const unassignedTeachers = teachers.filter(
+        (t) => !lessons.some((l) => l.teacher_id === t.id)
+      );
+      if (unassignedTeachers.length > 0) {
+        const names = unassignedTeachers.map((t) => t.full_name).slice(0, 2).join(', ');
+        const extra = unassignedTeachers.length > 2 ? ` (+${unassignedTeachers.length - 2} lainnya)` : '';
+        issues.push(`Guru belum memiliki penugasan jam: ${names}${extra}`);
+      }
+    }
+
+    if (classes.length > 0 && lessons.length > 0) {
+      const unassignedClasses = classes.filter(
+        (c) => !lessons.some((l) => l.class_id === c.id)
+      );
+      if (unassignedClasses.length > 0) {
+        const names = unassignedClasses.map((c) => c.class_name).slice(0, 3).join(', ');
+        const extra = unassignedClasses.length > 3 ? ` (+${unassignedClasses.length - 3} lainnya)` : '';
+        issues.push(`Kelas belum memiliki kartu pelajaran: ${names}${extra}`);
+      }
+    }
+
+    if (lessons.length > 0) {
+      const invalidLessons = lessons.filter((l) => {
+        if (!l.allowed_slot_types) return true;
+        const totalJP = Number(l.total_periods ?? l.total_periods_per_week ?? 0);
+        if (totalJP <= 0) return true;
+
+        const patternStr = Array.isArray(l.split_pattern)
+          ? l.split_pattern.join('+')
+          : String(l.split_pattern || '').trim();
+
+        if (!patternStr) return true;
+        const parts = patternStr
+          .split('+')
+          .map((s) => Number(s.trim()))
+          .filter((n) => !isNaN(n) && n > 0);
+
+        if (parts.length === 0) return true;
+        const sum = parts.reduce((a, b) => a + b, 0);
+        return sum !== totalJP;
+      });
+
+      if (invalidLessons.length > 0) {
+        issues.push(
+          `Ada ${invalidLessons.length} kartu beban mengajar yang pola pecah bloknya belum sesuai dengan total JP atau zona slotnya belum diatur.`
+        );
+      }
+    }
+
     return { isValid: issues.length === 0, issues };
   }, [teachers, classes, subjects, timeSlots, lessons]);
 
@@ -484,7 +539,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Simpan Kartu Beban Mengajar (Menggunakan versioning OCC)
+  // Simpan Kartu Beban Mengajar (Dengan OCC Versioning)
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     const schoolId = session?.user?.id;
@@ -509,7 +564,6 @@ export const App: React.FC = () => {
     const cleanPatternString = parts.join('+');
 
     try {
-      // Optimistic local update
       const updatedLessons = lessons.map((l) => {
         if (configTargetClassIds.includes(l.class_id) && l.subject_id === sId) {
           return {
@@ -534,7 +588,7 @@ export const App: React.FC = () => {
             operation: 'update',
             matchColumn: 'id',
             matchValue: existing.id,
-            expected_version: existing.version || 1, // OCC Versioning
+            expected_version: existing.version || 1,
             payload: {
               split_pattern: cleanPatternString,
               allowed_slot_types: configZone,
@@ -606,7 +660,7 @@ export const App: React.FC = () => {
       matchValue: day.id,
       expected_version: day.version || 1,
       payload: { is_active: newActive },
-      description: `Ubah hari ${day.day_name}`,
+      description: `Ubah status hari ${day.day_name}`,
     });
     refreshQueueCount();
     if (isOnline) triggerAutoSync();
@@ -769,18 +823,33 @@ export const App: React.FC = () => {
     if (isOnline) triggerAutoSync();
   };
 
+  // Pemicu Solver: Tombol Selalu Aktif dengan Konfirmasi & Peringatan Jika Data Belum Lengkap
   const handleTriggerSolver = async () => {
     if (!isOnline) {
-      alert('Solver Google OR-Tools membutuhkan koneksi internet aktif.');
+      alert('Penyusunan jadwal otomatis Google OR-Tools membutuhkan koneksi internet aktif.');
       return;
     }
 
     if (pendingQueueCount > 0) {
-      alert(`Ada ${pendingQueueCount} data belum tersinkron. Tekan tombol sinkronisasi terlebih dahulu.`);
+      alert(`Masih ada ${pendingQueueCount} data lokal belum tersinkron. Silakan tekan tombol sinkronisasi terlebih dahulu agar data cloud mutakhir.`);
       return;
     }
 
-    if (!confirm('Jalankan mesin solver jadwal di GitHub Actions?')) return;
+    // Jika data belum lengkap, tampilkan rincian peringatan & minta konfirmasi lanjutan
+    if (!validationStatus.isValid) {
+      const warningMessage =
+        'PERINGATAN: Pengaturan data jadwal belum lengkap:\n\n' +
+        validationStatus.issues.map((issue) => `• ${issue}`).join('\n') +
+        '\n\nMenyusun jadwal dalam kondisi data belum lengkap berpotensi menghasilkan jadwal yang tidak optimal atau tidak memenuhi target jam.\n\nApakah Anda yakin tetap ingin melanjutkan proses generate jadwal otomatis?';
+
+      const proceed = window.confirm(warningMessage);
+      if (!proceed) return;
+    } else {
+      const proceed = window.confirm(
+        'Seluruh data guru, kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin solver Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
+      );
+      if (!proceed) return;
+    }
 
     setIsGenerating(true);
     setJobStatus({ status: 'queued', message: 'Mendaftarkan job ke GitHub Actions...' });
@@ -788,7 +857,7 @@ export const App: React.FC = () => {
     try {
       await triggerScheduleGeneration();
     } catch (err: any) {
-      alert(`Gagal: ${err.message}`);
+      alert(`Gagal memicu solver: ${err.message}`);
       setIsGenerating(false);
       setJobStatus({ status: 'failed', message: `Gagal: ${err.message}` });
     }
@@ -796,7 +865,7 @@ export const App: React.FC = () => {
 
   const handleExportExcel = () => {
     if (schedules.length === 0) {
-      alert('Belum ada jadwal untuk diekspor.');
+      alert('Belum ada jadwal yang terbentuk untuk diekspor.');
       return;
     }
 
@@ -846,11 +915,22 @@ export const App: React.FC = () => {
     setTimeout(() => window.print(), 450);
   };
 
+  const currentSingleTitle = useMemo(() => {
+    const prefix = schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : '';
+    if (filterMode === 'CLASS') {
+      const cls = classes.find((c) => c.id === selectedId);
+      return cls ? `${prefix}JADWAL KELAS ${cls.class_name.toUpperCase()}` : 'JADWAL PELAJARAN';
+    } else {
+      const tch = teachers.find((t) => t.id === selectedId);
+      return tch ? `${prefix}JADWAL MENGAJAR: ${tch.full_name.toUpperCase()}` : 'JADWAL MENGAJAR';
+    }
+  }, [filterMode, selectedId, classes, teachers, schoolProfile]);
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm gap-2">
         <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
-        <span>Memeriksa sesi autentikasi...</span>
+        <span>Memeriksa sesi autentikasi sekolah...</span>
       </div>
     );
   }
@@ -861,6 +941,109 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-800">
+      {/* ATURAN CSS PRINT 1 LEMBAR A4 LANSKAP */}
+      <style>{`
+        @media print {
+          @page {
+            size: A4 landscape;
+            margin: 5mm 6mm;
+          }
+          html, body {
+            width: 100% !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          header.app-navbar, nav, .print\\:hidden, button, .no-print {
+            display: none !important;
+          }
+          main {
+            padding: 0 !important;
+            margin: 0 !important;
+            max-width: none !important;
+            width: 100% !important;
+            display: block !important;
+          }
+          .print-sheet {
+            display: block !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            page-break-after: always !important;
+            break-after: page !important;
+          }
+          .print-sheet:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
+          .sheet-header {
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            width: 100% !important;
+            height: auto !important;
+            max-height: 28px !important;
+            margin: 0 0 4px 0 !important;
+            padding: 0 0 3px 0 !important;
+            border-bottom: 1.5px solid #0f172a !important;
+          }
+          .sheet-header h2 {
+            font-size: 10pt !important;
+            font-weight: 800 !important;
+            margin: 0 !important;
+            color: #0f172a !important;
+          }
+          .sheet-header span {
+            font-size: 7.5pt !important;
+            color: #475569 !important;
+          }
+          .print-sheet div {
+            overflow: visible !important;
+            box-shadow: none !important;
+            max-height: none !important;
+          }
+          .print-sheet table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
+          }
+          .print-sheet tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+          .print-sheet th {
+            background-color: #0f172a !important;
+            color: #ffffff !important;
+            font-size: 8pt !important;
+            font-weight: 700 !important;
+            padding: 3px 4px !important;
+            border: 1px solid #334155 !important;
+          }
+          .print-sheet td {
+            padding: 2px 3px !important;
+            border: 1px solid #cbd5e1 !important;
+            vertical-align: top !important;
+          }
+          .print-sheet td > div, .print-sheet [class*="min-h-"] {
+            min-height: 0 !important;
+            height: auto !important;
+            padding: 1.5px 3px !important;
+            margin: 0 !important;
+          }
+          .print-sheet td p, .print-sheet td span, .print-sheet td div {
+            font-size: 7.5pt !important;
+            line-height: 1.1 !important;
+          }
+        }
+      `}</style>
+
+      {/* HEADER NAVIGASI UTAMA */}
       <header className="app-navbar bg-white border-b border-slate-200 px-6 py-3 shadow-sm sticky top-0 z-40 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -888,6 +1071,7 @@ export const App: React.FC = () => {
                   <button
                     onClick={() => setIsConflictModalOpen(true)}
                     className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-rose-50 border border-rose-300 text-rose-700 flex items-center gap-1 animate-bounce"
+                    title="Ada perbedaan data antara lokal dan cloud"
                   >
                     <AlertTriangle className="w-3 h-3 text-rose-600" />
                     <span>{conflictCount} Konflik Data</span>
@@ -927,12 +1111,14 @@ export const App: React.FC = () => {
               <button
                 onClick={handleInstallApp}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-400 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition shadow-sm animate-pulse"
+                title="Tambahkan pintasan fullscreen ke layar utama"
               >
                 <Download className="w-4 h-4 text-indigo-600" />
                 <span>Install Aplikasi</span>
               </button>
             )}
 
+            {/* Panel Token: Hanya Admin */}
             {isAdmin && (
               <button
                 onClick={() => setIsAdminModalOpen(true)}
@@ -1009,14 +1195,18 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
+            {/* TOMBOL GENERATE JADWAL OTOMATIS (SELALU AKTIF) */}
             <button
               onClick={handleTriggerSolver}
-              disabled={isGenerating || !isOnline}
+              disabled={isGenerating}
+              title={
+                !validationStatus.isValid
+                  ? 'Pengaturan data belum lengkap. Klik untuk melihat detail & konfirmasi generate.'
+                  : 'Klik untuk membuat jadwal otomatis'
+              }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isGenerating
                   ? 'bg-slate-400 text-white cursor-not-allowed'
-                  : !isOnline
-                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
                   : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 cursor-pointer'
               }`}
             >
@@ -1044,11 +1234,78 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* FEEDBACK SINKRONISASI */}
       {syncFeedback && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2 shadow-sm">
             <CloudUpload className="w-4 h-4 text-blue-600 shrink-0" />
             <span className="font-semibold">{syncFeedback}</span>
+          </div>
+        </div>
+      )}
+
+      {/* BANNER STATUS KONEKSI OFFLINE */}
+      {!isOnline && (
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between shadow-sm">
+            <div className="flex items-center gap-2">
+              <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Mode Offline Aktif:</strong> Anda tetap dapat mengatur kartu mapel, hari & jam kerja, dan mencetak jadwal. Setiap perubahan disimpan ke antrean lokal ({pendingQueueCount} data) dan otomatis tersinkronisasi saat kembali online.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BANNER STATUS KESIAPAN DATA (INFORMASIONAL) */}
+      {isOnline && !validationStatus.isValid && (
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-bold">Pengaturan jadwal belum lengkap:</span>
+              <ul className="list-disc list-inside mt-1 space-y-0.5 text-amber-800 text-[11px]">
+                {validationStatus.issues.map((issue, idx) => (
+                  <li key={idx}>{issue}</li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-[11px] text-amber-700 italic">
+                * Tombol "Generate Jadwal Otomatis" tetap dapat ditekan jika Anda ingin memaksakan penyusunan jadwal.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BANNER STATUS SOLVER */}
+      {isOnline && jobStatus.status !== 'idle' && (
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
+          <div
+            className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs transition ${
+              jobStatus.status === 'processing' || jobStatus.status === 'queued'
+                ? 'bg-blue-50 border-blue-200 text-blue-900'
+                : jobStatus.status === 'completed'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-rose-50 border-rose-200 text-rose-900'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {jobStatus.status === 'processing' || jobStatus.status === 'queued' ? (
+                <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
+              ) : jobStatus.status === 'completed' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              )}
+              <span className="font-medium">{jobStatus.message}</span>
+              {jobStatus.elapsedMs && (
+                <span className="text-[11px] font-mono opacity-75">({jobStatus.elapsedMs} ms)</span>
+              )}
+            </div>
+            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-white/70 border border-current">
+              {jobStatus.status}
+            </span>
           </div>
         </div>
       )}
@@ -1138,6 +1395,10 @@ export const App: React.FC = () => {
         <div className="flex-1">
           {printMode === 'SINGLE' && (
             <div className="print-sheet">
+              <div className="sheet-header hidden print:flex">
+                <h2>{currentSingleTitle}</h2>
+                <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
+              </div>
               <TimetableGrid
                 workDays={workDays}
                 timeSlots={timeSlots}
@@ -1158,6 +1419,13 @@ export const App: React.FC = () => {
             <div>
               {classes.map((cls) => (
                 <div key={cls.id} className="print-sheet">
+                  <div className="sheet-header">
+                    <h2>
+                      {schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : ''}
+                      JADWAL PELAJARAN KELAS {cls.class_name.toUpperCase()}
+                    </h2>
+                    <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
+                  </div>
                   <TimetableGrid
                     workDays={workDays}
                     timeSlots={timeSlots}
@@ -1179,6 +1447,13 @@ export const App: React.FC = () => {
             <div>
               {teachers.map((tch) => (
                 <div key={tch.id} className="print-sheet">
+                  <div className="sheet-header">
+                    <h2>
+                      {schoolProfile?.school_name ? `${schoolProfile.school_name.toUpperCase()} — ` : ''}
+                      JADWAL MENGAJAR: {tch.full_name.toUpperCase()} ({tch.teacher_code})
+                    </h2>
+                    <span>{schoolProfile?.school_address || 'sekolah.ewahyu.my.id'}</span>
+                  </div>
                   <TimetableGrid
                     workDays={workDays}
                     timeSlots={timeSlots}
@@ -1198,7 +1473,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL RESOLVER KONFLIK DATA */}
+      {/* MODAL CONFLICT RESOLVER */}
       {session?.user?.id && (
         <ConflictResolverModal
           isOpen={isConflictModalOpen}
