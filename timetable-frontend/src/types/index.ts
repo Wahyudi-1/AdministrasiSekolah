@@ -36,8 +36,8 @@ export interface Teacher {
   school_id?: string;
   teacher_code: string;
   full_name: string;
-  max_periods_per_day?: number;
-  unavailable_slots?: UnavailableRule[] | any[];
+  max_periods_per_day: number; // Tetap number pasti
+  unavailable_slots: UnavailableRule[];
   version?: number;
   updated_at?: string;
 }
@@ -46,7 +46,7 @@ export interface ClassRoom {
   id: string;
   school_id?: string;
   class_name: string;
-  grade_level?: number | string;
+  grade_level: number; // Tetap number pasti
   created_at?: string;
 }
 
@@ -54,7 +54,7 @@ export interface Room {
   id: string;
   school_id?: string;
   room_name: string;
-  room_type?: string;
+  room_type: string;
 }
 
 export interface Subject {
