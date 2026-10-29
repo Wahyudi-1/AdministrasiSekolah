@@ -25,6 +25,9 @@ import {
   LogOut,
   KeyRound,
   School,
+  Download,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Session } from '@supabase/supabase-js';
@@ -47,7 +50,6 @@ import {
   ScheduleItem,
 } from './types';
 
-// Daftar email administrator yang berhak mengelola token & database
 const ADMIN_EMAILS = [
   'joedie.meyson@gmail.com',
 ];
@@ -61,6 +63,11 @@ export const App: React.FC = () => {
     full_name: string;
     school_address: string;
   } | null>(null);
+
+  // State PWA & Koneksi Jaringan
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState<boolean>(false);
 
   // State Data Master & Jadwal
   const [workDays, setWorkDays] = useState<WorkDay[]>([]);
@@ -128,7 +135,45 @@ export const App: React.FC = () => {
     );
   }, [session?.user?.email]);
 
-  // 1. Pemeriksaan Sesi Login Supabase
+  // Listener PWA Install Prompt & Online/Offline Status
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      fetchAllData();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstallable(false);
+    }
+    setDeferredPrompt(null);
+  };
+
+  // 1. Pemeriksaan Sesi Login
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -152,10 +197,32 @@ export const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. Mengambil Semua Data Milik Sekolah yang Sedang Login
+  // 2. Mengambil Data (Dengan Fallback Cache Offline Lokal)
   const fetchAllData = async () => {
-    if (!session?.user) return;
-    const schoolId = session.user.id;
+    const schoolId = session?.user?.id;
+    if (!schoolId) return;
+
+    // Jika sedang offline, ambil dari penyimpanan lokal (localStorage)
+    if (!navigator.onLine) {
+      try {
+        const cached = localStorage.getItem(`offline_cache_${schoolId}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed.workDays) setWorkDays(parsed.workDays);
+          if (parsed.timeSlots) setTimeSlots(parsed.timeSlots);
+          if (parsed.teachers) setTeachers(parsed.teachers);
+          if (parsed.classes) setClasses(parsed.classes);
+          if (parsed.rooms) setRooms(parsed.rooms);
+          if (parsed.subjects) setSubjects(parsed.subjects);
+          if (parsed.lessons) setLessons(parsed.lessons);
+          if (parsed.schedules) setSchedules(parsed.schedules);
+          if (parsed.schoolProfile) setSchoolProfile(parsed.schoolProfile);
+        }
+      } catch (err) {
+        console.error('Gagal membaca cache lokal offline:', err);
+      }
+      return;
+    }
 
     try {
       const [
@@ -180,10 +247,7 @@ export const App: React.FC = () => {
         supabase.from('schedules').select('*').eq('school_id', schoolId),
       ]);
 
-      if (profileRes.data) {
-        setSchoolProfile(profileRes.data);
-      }
-
+      let loadedWorkDays = daysRes.data || [];
       if (daysRes.data && daysRes.data.length === 0) {
         const defaultDays = [
           { school_id: schoolId, day_index: 1, day_name: 'Senin', is_active: true },
@@ -194,11 +258,11 @@ export const App: React.FC = () => {
           { school_id: schoolId, day_index: 6, day_name: 'Sabtu', is_active: false },
         ];
         const { data: insertedDays } = await supabase.from('work_days').insert(defaultDays).select();
-        if (insertedDays) setWorkDays(insertedDays);
-      } else if (daysRes.data) {
-        setWorkDays(daysRes.data);
+        if (insertedDays) loadedWorkDays = insertedDays;
       }
 
+      if (profileRes.data) setSchoolProfile(profileRes.data);
+      setWorkDays(loadedWorkDays);
       if (slotsRes.data) setTimeSlots(slotsRes.data);
       if (teachersRes.data) {
         setTeachers(teachersRes.data);
@@ -214,14 +278,45 @@ export const App: React.FC = () => {
       if (subjectsRes.data) setSubjects(subjectsRes.data);
       if (lessonsRes.data) setLessons(lessonsRes.data);
       if (schedulesRes.data) setSchedules(schedulesRes.data);
+
+      // Simpan salinan terbaru ke memori lokal untuk akses offline
+      localStorage.setItem(
+        `offline_cache_${schoolId}`,
+        JSON.stringify({
+          workDays: loadedWorkDays,
+          timeSlots: slotsRes.data || [],
+          teachers: teachersRes.data || [],
+          classes: classesRes.data || [],
+          rooms: roomsRes.data || [],
+          subjects: subjectsRes.data || [],
+          lessons: lessonsRes.data || [],
+          schedules: schedulesRes.data || [],
+          schoolProfile: profileRes.data || null,
+        })
+      );
     } catch (err: any) {
-      console.error('Gagal mengambil data sekolah:', err.message);
+      console.error('Gagal mengambil data dari Supabase, beralih ke cache lokal:', err.message);
+      const cached = localStorage.getItem(`offline_cache_${schoolId}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed.workDays) setWorkDays(parsed.workDays);
+        if (parsed.timeSlots) setTimeSlots(parsed.timeSlots);
+        if (parsed.teachers) setTeachers(parsed.teachers);
+        if (parsed.classes) setClasses(parsed.classes);
+        if (parsed.rooms) setRooms(parsed.rooms);
+        if (parsed.subjects) setSubjects(parsed.subjects);
+        if (parsed.lessons) setLessons(parsed.lessons);
+        if (parsed.schedules) setSchedules(parsed.schedules);
+        if (parsed.schoolProfile) setSchoolProfile(parsed.schoolProfile);
+      }
     }
   };
 
   useEffect(() => {
     if (!session?.user) return;
     fetchAllData();
+
+    if (!isOnline) return;
 
     const jobsChannel = supabase
       .channel('realtime_generation_jobs')
@@ -271,7 +366,7 @@ export const App: React.FC = () => {
       supabase.removeChannel(jobsChannel);
       supabase.removeChannel(schedulesChannel);
     };
-  }, [session?.user?.id]);
+  }, [session?.user?.id, isOnline]);
 
   useEffect(() => {
     const handleAfterPrint = () => setPrintMode('SINGLE');
@@ -307,7 +402,6 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // Validasi Kesiapan Data Penjadwalan
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
 
@@ -395,6 +489,10 @@ export const App: React.FC = () => {
 
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isOnline) {
+      alert('Fitur penyimpanan kartu beban mengajar membutuhkan koneksi internet.');
+      return;
+    }
     if (!configAssignmentKey || configTargetClassIds.length === 0) return;
 
     const [, sId] = configAssignmentKey.split('__');
@@ -455,12 +553,20 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteLesson = async (id: string) => {
+    if (!isOnline) {
+      alert('Perubahan data membutuhkan koneksi internet.');
+      return;
+    }
     if (!confirm('Hapus kartu pelajaran ini?')) return;
     const { error } = await supabase.from('lessons').delete().eq('id', id);
     if (!error) fetchAllData();
   };
 
   const handleToggleDay = async (day: WorkDay) => {
+    if (!isOnline) {
+      alert('Perubahan hari aktif membutuhkan koneksi internet.');
+      return;
+    }
     const { error } = await supabase
       .from('work_days')
       .update({ is_active: !day.is_active })
@@ -481,6 +587,10 @@ export const App: React.FC = () => {
 
   const handleSaveSlot = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isOnline) {
+      alert('Konfigurasi slot jam membutuhkan koneksi internet.');
+      return;
+    }
     if (!session?.user || targetDayIndices.length === 0) return;
 
     setSavingSlot(true);
@@ -510,6 +620,10 @@ export const App: React.FC = () => {
   };
 
   const handleResetAllSlots = async () => {
+    if (!isOnline) {
+      alert('Fitur reset slot jam membutuhkan koneksi internet.');
+      return;
+    }
     if (!session?.user) return;
     const konfirmasi = window.confirm(
       'PERINGATAN: Mengosongkan seluruh slot jam juga akan menghapus jadwal pelajaran sekolah Anda yang saat ini terpasang di matriks.\n\nLanjutkan?'
@@ -531,6 +645,10 @@ export const App: React.FC = () => {
 
   const handleAddConstraint = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isOnline) {
+      alert('Pengaturan syarat jam guru membutuhkan koneksi internet.');
+      return;
+    }
     if (!selectedTeacherId) return;
     setSavingConstraint(true);
     try {
@@ -568,13 +686,21 @@ export const App: React.FC = () => {
   };
 
   const handleClearConstraint = async (teacherId: string) => {
+    if (!isOnline) {
+      alert('Reset syarat jam guru membutuhkan koneksi internet.');
+      return;
+    }
     const { error } = await supabase.from('teachers').update({ unavailable_slots: [] }).eq('id', teacherId);
     if (!error) fetchAllData();
   };
 
-  // Pemicu Solver GitHub Actions dengan Peringatan & Konfirmasi
+  // Pemicu Solver GitHub Actions (Memerlukan Online)
   const handleTriggerSolver = async () => {
-    // 1. Jika data belum lengkap, tampilkan peringatan rincian dan minta konfirmasi apakah tetap ingin melanjutkan
+    if (!isOnline) {
+      alert('Mesin pembuat jadwal Google OR-Tools di GitHub Actions memerlukan koneksi internet aktif. Sambungkan internet Anda terlebih dahulu.');
+      return;
+    }
+
     if (!validationStatus.isValid) {
       const warningMessage =
         'PERINGATAN: Pengaturan data belum lengkap:\n\n' +
@@ -584,7 +710,6 @@ export const App: React.FC = () => {
       const proceedWithIncomplete = window.confirm(warningMessage);
       if (!proceedWithIncomplete) return;
     } else {
-      // 2. Jika seluruh data sudah lengkap, tampilkan konfirmasi standar
       const proceedComplete = window.confirm(
         'Seluruh data guru, rombel kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
       );
@@ -606,6 +731,7 @@ export const App: React.FC = () => {
     }
   };
 
+  // Ekspor Excel (Tetap Berfungsi Penuh Saat Offline)
   const handleExportExcel = () => {
     if (schedules.length === 0) {
       alert('Belum ada jadwal yang terbentuk untuk diekspor.');
@@ -655,6 +781,7 @@ export const App: React.FC = () => {
     XLSX.writeFile(wb, `Jadwal_${schoolSlug}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
+  // Cetak PDF (Tetap Berfungsi Penuh Saat Offline)
   const handlePrintBatch = (mode: 'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS') => {
     setPrintMode(mode);
     setTimeout(() => {
@@ -673,7 +800,6 @@ export const App: React.FC = () => {
     }
   }, [filterMode, selectedId, classes, teachers, schoolProfile]);
 
-  // Loading state sesi
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm gap-2">
@@ -683,7 +809,6 @@ export const App: React.FC = () => {
     );
   }
 
-  // Tampilkan AuthPage jika belum login
   if (!session) {
     return <AuthPage onAuthSuccess={fetchAllData} />;
   }
@@ -803,9 +928,19 @@ export const App: React.FC = () => {
                 <h1 className="font-bold text-base text-slate-900 leading-tight">
                   {schoolProfile?.school_name || 'Smart Timetable CSP'}
                 </h1>
-                <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  {jobStatus.message}
-                </span>
+                
+                {/* Indikator Online/Offline Status */}
+                {isOnline ? (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                    <Wifi className="w-3 h-3 text-emerald-600" />
+                    <span>Online</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1">
+                    <WifiOff className="w-3 h-3 text-amber-600" />
+                    <span>Mode Offline (Tersimpan Lokal)</span>
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500">
                 User: <span className="font-semibold text-slate-700">{schoolProfile?.full_name || session.user.email}</span>
@@ -814,12 +949,29 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Tombol Panel Token (Khusus Admin) */}
+            {/* Tombol Install Aplikasi ke Layar Utama (PWA Fullscreen) */}
+            {isInstallable && (
+              <button
+                onClick={handleInstallApp}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-400 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition shadow-sm animate-pulse"
+                title="Tambahkan pintasan ke layar utama HP/Tablet dengan tampilan Fullscreen"
+              >
+                <Download className="w-4 h-4 text-indigo-600" />
+                <span>Install Aplikasi</span>
+              </button>
+            )}
+
+            {/* Tombol Panel Token: Hanya Admin & Hanya Online */}
             {isAdmin && (
               <button
                 onClick={() => setIsAdminModalOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold transition shadow-sm"
-                title="Generate dan kelola token akses sekolah"
+                disabled={!isOnline}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                  !isOnline
+                    ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                    : 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900'
+                }`}
+                title={!isOnline ? 'Hanya dapat diakses saat online' : 'Generate dan kelola token akses sekolah'}
               >
                 <KeyRound className="w-4 h-4 text-amber-600" />
                 <span>Panel Token</span>
@@ -828,7 +980,13 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsMasterModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
+              disabled={!isOnline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                !isOnline
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
+              }`}
+              title={!isOnline ? 'Hanya dapat diubah saat online' : 'Kelola Guru, Mapel, Kelas, dan Ruangan'}
             >
               <Database className="w-4 h-4 text-emerald-600" />
               <span>Master Data</span>
@@ -836,7 +994,13 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsImportModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold transition shadow-sm"
+              disabled={!isOnline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                !isOnline
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800'
+              }`}
+              title={!isOnline ? 'Hanya dapat diakses saat online' : 'Import Excel'}
             >
               <Upload className="w-4 h-4 text-emerald-700" />
               <span>Import Excel</span>
@@ -844,7 +1008,12 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsAssignmentModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold transition shadow-sm"
+              disabled={!isOnline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                !isOnline
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
+              }`}
             >
               <UserCheck className="w-4 h-4 text-indigo-700" />
               <span>Penugasan Guru</span>
@@ -857,7 +1026,12 @@ export const App: React.FC = () => {
                 }
                 setIsLessonModalOpen(true);
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
+              disabled={!isOnline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                !isOnline
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
+              }`}
             >
               <Layers className="w-4 h-4 text-indigo-600" />
               <span>Kartu Beban Mengajar</span>
@@ -868,7 +1042,12 @@ export const App: React.FC = () => {
                 handleSelectAllActiveDays();
                 setIsSlotModalOpen(true);
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
+              disabled={!isOnline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                !isOnline
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
+              }`}
             >
               <Clock className="w-4 h-4 text-indigo-600" />
               <span>Hari & Jam</span>
@@ -876,24 +1055,31 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => setIsConstraintModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
+              disabled={!isOnline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition shadow-sm ${
+                !isOnline
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-slate-300 hover:bg-slate-50 text-slate-700'
+              }`}
             >
               <ShieldAlert className="w-4 h-4 text-amber-600" />
               <span>Syarat Jam Guru</span>
             </button>
 
-            {/* TOMBOL GENERATE JADWAL OTOMATIS: SELALU AKTIF */}
+            {/* Tombol Generate Jadwal: Membutuhkan Online */}
             <button
               onClick={handleTriggerSolver}
-              disabled={isGenerating}
+              disabled={isGenerating || !isOnline}
               title={
-                !validationStatus.isValid
-                  ? 'Catatan: Ada beberapa pengaturan data yang belum lengkap. Klik untuk melihat detail & konfirmasi.'
+                !isOnline
+                  ? 'Mode Offline: Sambungkan ke internet untuk menyusun jadwal otomatis di cloud'
                   : 'Klik untuk membuat jadwal otomatis'
               }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isGenerating
                   ? 'bg-slate-400 text-white cursor-not-allowed'
+                  : !isOnline
+                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
                   : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 cursor-pointer'
               }`}
             >
@@ -922,8 +1108,22 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* BANNER NOTIFIKASI OFFLINE */}
+      {!isOnline && (
+        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between shadow-sm">
+            <div className="flex items-center gap-2">
+              <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Aplikasi Sedang Dalam Mode Offline:</strong> Anda tetap dapat melihat jadwal per kelas/guru, mengekspor Excel, dan mencetak dokumen PDF. Fitur sinkronisasi server dan generate otomatis akan aktif kembali saat perangkat terhubung ke internet.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* BANNER STATUS KESIAPAN DATA (INFORMASIONAL) */}
-      {!validationStatus.isValid && (
+      {isOnline && !validationStatus.isValid && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -943,7 +1143,7 @@ export const App: React.FC = () => {
       )}
 
       {/* BANNER STATUS SOLVER */}
-      {jobStatus.status !== 'idle' && (
+      {isOnline && jobStatus.status !== 'idle' && (
         <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
           <div
             className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs transition ${
@@ -974,7 +1174,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* TOOLBAR FILTER & MATRIKS */}
+      {/* TOOLBAR FILTER & MATRIKS (AKTIF OFFLINE & ONLINE) */}
       <main className="max-w-7xl mx-auto w-full px-6 py-4 flex-1 flex flex-col gap-4">
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3 print:hidden">
           <div className="flex items-center gap-2">
@@ -1137,7 +1337,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* MODAL ADMIN TOKEN (HANYA DI-RENDER JIKA LOGIN SEBAGAI ADMIN) */}
+      {/* MODAL ADMIN TOKEN */}
       {isAdmin && (
         <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />
       )}
