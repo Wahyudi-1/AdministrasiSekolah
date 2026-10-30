@@ -21,6 +21,7 @@ interface Props {
   subjects: Subject[];
   classes: ClassRoom[];
   rooms?: Room[];
+  schoolId: string; // <-- Isolasi Multi-Tenant
   onDataUpdated: () => void;
 }
 
@@ -33,6 +34,7 @@ export const MasterDataModal: React.FC<Props> = ({
   subjects,
   classes,
   rooms = [],
+  schoolId,
   onDataUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('TEACHER');
@@ -62,7 +64,6 @@ export const MasterDataModal: React.FC<Props> = ({
 
   if (!isOpen) return null;
 
-  // Reset seluruh form saat pindah tab atau batal edit
   const resetForms = () => {
     setEditingTeacherId(null);
     setTeacherCode('');
@@ -108,11 +109,13 @@ export const MasterDataModal: React.FC<Props> = ({
             full_name: fullName.trim(),
             max_periods_per_day: Number(maxPeriods),
           })
-          .eq('id', editingTeacherId);
+          .eq('id', editingTeacherId)
+          .eq('school_id', schoolId);
         if (error) throw error;
       } else {
         const { error } = await supabase.from('teachers').insert([
           {
+            school_id: schoolId,
             teacher_code: teacherCode.trim().toUpperCase(),
             full_name: fullName.trim(),
             max_periods_per_day: Number(maxPeriods),
@@ -152,11 +155,13 @@ export const MasterDataModal: React.FC<Props> = ({
             subject_code: subjectCode.trim().toUpperCase(),
             subject_name: subjectName.trim(),
           })
-          .eq('id', editingSubjectId);
+          .eq('id', editingSubjectId)
+          .eq('school_id', schoolId);
         if (error) throw error;
       } else {
         const { error } = await supabase.from('subjects').insert([
           {
+            school_id: schoolId,
             subject_code: subjectCode.trim().toUpperCase(),
             subject_name: subjectName.trim(),
           },
@@ -194,11 +199,13 @@ export const MasterDataModal: React.FC<Props> = ({
             class_name: className.trim(),
             grade_level: Number(gradeLevel),
           })
-          .eq('id', editingClassId);
+          .eq('id', editingClassId)
+          .eq('school_id', schoolId);
         if (error) throw error;
       } else {
         const { error } = await supabase.from('classes').insert([
           {
+            school_id: schoolId,
             class_name: className.trim(),
             grade_level: Number(gradeLevel),
           },
@@ -236,11 +243,13 @@ export const MasterDataModal: React.FC<Props> = ({
             room_name: roomName.trim(),
             room_type: roomType.trim(),
           })
-          .eq('id', editingRoomId);
+          .eq('id', editingRoomId)
+          .eq('school_id', schoolId);
         if (error) throw error;
       } else {
         const { error } = await supabase.from('rooms').insert([
           {
+            school_id: schoolId,
             room_name: roomName.trim(),
             room_type: roomType.trim(),
           },
@@ -256,7 +265,7 @@ export const MasterDataModal: React.FC<Props> = ({
     }
   };
 
-  // --- HANDLER HAPUS ---
+  // --- HANDLER HAPUS (DILINDUNGI SCHOOL_ID) ---
   const handleDelete = async (
     table: 'teachers' | 'subjects' | 'classes' | 'rooms',
     id: string,
@@ -267,7 +276,11 @@ export const MasterDataModal: React.FC<Props> = ({
     setLoading(true);
     setErrorMsg('');
     try {
-      const { error } = await supabase.from(table).delete().eq('id', id);
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq('id', id)
+        .eq('school_id', schoolId);
       if (error) throw error;
       resetForms();
       onDataUpdated();
