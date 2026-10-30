@@ -36,7 +36,10 @@ export interface Teacher {
   school_id?: string;
   teacher_code: string;
   full_name: string;
-  max_periods_per_day: number; // Tetap number pasti
+  max_periods_per_day: number;
+  max_consecutive_periods?: number;
+  disallow_full_day?: boolean;
+  min_periods_per_week?: number;
   unavailable_slots: UnavailableRule[];
   version?: number;
   updated_at?: string;
@@ -46,7 +49,7 @@ export interface ClassRoom {
   id: string;
   school_id?: string;
   class_name: string;
-  grade_level: number; // Tetap number pasti
+  grade_level: number;
   created_at?: string;
 }
 
