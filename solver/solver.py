@@ -174,7 +174,7 @@ def main():
                     if vars_in_day:
                         model.Add(sum(vars_in_day) <= 1)
 
-        # Constraint 2: Anti Bentrok Kelas, Guru, dan Ruangan
+        # Constraint 2: Anti Bentrok Kelas, Guru, dan Ruangan Khusus
         for s_id, active_list in slot_coverage.items():
             by_class = {}
             by_teacher = {}
@@ -199,7 +199,7 @@ def main():
                 if len(vars_rm) > 1:
                     model.Add(sum(vars_rm) <= 1)
 
-        # Constraint 3: Kebijakan Guru + Soft Constraints (Pemerataan & Idle Gap Minimization)
+        # Constraint 3: Kebijakan Guru + HARD CONSTRAINT MAX IDLE GAP + Soft Constraint Pemerataan
         teacher_map = {t["id"]: t for t in teachers}
         soft_penalty_terms = []
 
@@ -207,6 +207,7 @@ def main():
             max_per_day = int(t_data.get("max_periods_per_day") or 8)
             max_consecutive = int(t_data.get("max_consecutive_periods") or 4)
             disallow_full_day = bool(t_data.get("disallow_full_day", True))
+            max_idle_gap = int(t_data.get("max_idle_gap_per_day") if t_data.get("max_idle_gap_per_day") is not None else 1)
             unavail = t_data.get("unavailable_slots") or []
 
             if isinstance(unavail, str):
@@ -236,20 +237,15 @@ def main():
                 day_slots.sort(key=lambda s: s["period_number"])
 
                 day_teaching_vars = []
-                period_indices = []
-
-                for idx_p, s in enumerate(day_slots):
+                for s in day_slots:
                     t_active_in_slot = [
                         var for m_idx, var in slot_coverage[s["id"]]
                         if meetings[m_idx]["teacher_id"] == t_id
                     ]
                     if t_active_in_slot:
-                        v = sum(t_active_in_slot)
-                        day_teaching_vars.append(v)
-                        period_indices.append(idx_p)
+                        day_teaching_vars.append(sum(t_active_in_slot))
                     else:
                         day_teaching_vars.append(0)
-                        period_indices.append(idx_p)
 
                 total_slots_in_day = len(day_teaching_vars)
                 if total_slots_in_day == 0:
@@ -273,15 +269,8 @@ def main():
                         window = day_teaching_vars[w_start : w_start + window_size]
                         model.Add(sum(window) <= max_consecutive)
 
-                # 3F. Soft Constraint: Penalti Deviasi Beban Harian di Atas Target Ideal
-                if total_t_jp > 0:
-                    overload_day = model.NewIntVar(0, total_slots_in_day, f"over_{t_id}_d{d}")
-                    model.Add(overload_day >= daily_load - ideal_daily_avg)
-                    soft_penalty_terms.append(overload_day * 10)
-
-                # 3G. Soft Constraint: Minimalkan Jam Kosong di Tengah Hari (Idle Gap Minimization)
-                # Menghitung selisih antara rentang mengajar (jam akhir - jam awal) dengan total JP
-                if total_slots_in_day >= 3 and total_t_jp > 0:
+                # 3F. HARD CONSTRAINT: BATAS MAKSIMAL JAM KOSONG (MAX IDLE GAP)
+                if total_slots_in_day >= 3:
                     first_p = model.NewIntVar(0, total_slots_in_day, f"first_{t_id}_d{d}")
                     last_p = model.NewIntVar(0, total_slots_in_day, f"last_{t_id}_d{d}")
                     has_class = model.NewBoolVar(f"has_{t_id}_d{d}")
@@ -289,19 +278,25 @@ def main():
                     model.Add(daily_load > 0).OnlyEnforceIf(has_class)
                     model.Add(daily_load == 0).OnlyEnforceIf(has_class.Not())
 
-                    # Batasi first_p dan last_p jika guru mengajar pada hari tersebut
                     for p_num, var in enumerate(day_teaching_vars):
-                        # Jika guru mengajar di jam p_num: first_p <= p_num dan last_p >= p_num
                         model.Add(first_p <= p_num).OnlyEnforceIf(var)
                         model.Add(last_p >= p_num).OnlyEnforceIf(var)
 
                     idle_gap = model.NewIntVar(0, total_slots_in_day, f"gap_{t_id}_d{d}")
-                    # Rentang durasi mengajar dikurangi jam efektif = jam kosong
                     model.Add(idle_gap >= (last_p - first_p + 1) - daily_load).OnlyEnforceIf(has_class)
                     model.Add(idle_gap == 0).OnlyEnforceIf(has_class.Not())
 
-                    # Penalti bobot 15 untuk setiap jam kosong di sela-sela mengajar
-                    soft_penalty_terms.append(idle_gap * 15)
+                    # KUNCI BATAS KERAS: idle_gap tidak boleh melampaui batas maksimal
+                    model.Add(idle_gap <= max_idle_gap).OnlyEnforceIf(has_class)
+
+                    # Soft penalty tambahan untuk menekan idle gap hingga 0 (tanpa jam kosong sama sekali jika memungkinkan)
+                    soft_penalty_terms.append(idle_gap * 20)
+
+                # 3G. Soft Constraint: Penalti Deviasi Beban Harian di Atas Target Ideal
+                if total_t_jp > 0:
+                    overload_day = model.NewIntVar(0, total_slots_in_day, f"over_{t_id}_d{d}")
+                    model.Add(overload_day >= daily_load - ideal_daily_avg)
+                    soft_penalty_terms.append(overload_day * 10)
 
             # 3H. Soft Constraint: Menekan Puncak Jam Tertinggi Guru
             if daily_load_vars and total_t_jp > 0:
@@ -316,7 +311,7 @@ def main():
         update_job(
             JOB_ID,
             "processing",
-            "Menjalankan optimasi CP-SAT: Pemerataan jam & pemadatan jadwal guru...",
+            "Menjalankan optimasi CP-SAT: Mengunci Max Idle Gap & pemerataan beban guru...",
         )
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 35.0
@@ -325,7 +320,7 @@ def main():
 
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise RuntimeError(
-                "Tidak ditemukan kombinasi jadwal yang memenuhi batasan. Coba longgarkan batas jam berturut-turut atau periksa ketersediaan jam guru."
+                "Tidak ditemukan kombinasi jadwal yang memenuhi seluruh batasan keras (termasuk batas maksimal jam sela/gap). Coba naikkan batas Max Idle Gap guru menjadi 2 jam atau periksa ketersediaan slot hari."
             )
 
         schedule_rows = []
@@ -357,7 +352,7 @@ def main():
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         status_label = "OPTIMAL" if status == cp_model.OPTIMAL else "FEASIBLE"
-        msg = f"SUKSES ({status_label}): Berhasil menyusun {len(schedule_rows)} slot jam pelajaran (merata & minim jam kosong)."
+        msg = f"SUKSES ({status_label}): Berhasil menyusun {len(schedule_rows)} slot jadwal (kompak tanpa sela melebihi batas)."
         print(msg)
         update_job(JOB_ID, "completed", msg, elapsed_ms)
 
