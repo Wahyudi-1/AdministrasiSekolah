@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Calendar,
   Clock,
   Play,
   RefreshCw,
@@ -14,6 +13,8 @@ import {
   AlertTriangle,
   Loader2,
   ShieldAlert,
+  ShieldCheck,
+  Scale,
   X,
   Trash2,
   Check,
@@ -47,6 +48,8 @@ import { AssignmentModal } from './components/AssignmentModal';
 import { AuthPage } from './components/AuthPage';
 import { AdminTokenModal } from './components/AdminTokenModal';
 import { ConflictResolverModal } from './components/ConflictResolverModal';
+import { TeacherPolicyModal } from './components/TeacherPolicyModal';
+import { WorkloadAuditModal } from './components/WorkloadAuditModal';
 import {
   WorkDay,
   TimeSlot,
@@ -104,6 +107,8 @@ export const App: React.FC = () => {
   const [isConstraintModalOpen, setIsConstraintModalOpen] = useState<boolean>(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
   const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
+  const [isTeacherPolicyOpen, setIsTeacherPolicyOpen] = useState<boolean>(false);
+  const [isWorkloadAuditOpen, setIsWorkloadAuditOpen] = useState<boolean>(false);
 
   // State Konfigurasi Kartu Beban Mengajar (Multi-Kelas)
   const [configAssignmentKey, setConfigAssignmentKey] = useState<string>('');
@@ -216,7 +221,6 @@ export const App: React.FC = () => {
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-    // Tangkap pesan dari Service Worker Background Sync
     const handleSWMessage = (event: MessageEvent) => {
       if (event.data && event.data.type === 'SW_SYNC_SUCCESS') {
         refreshQueueCount();
@@ -474,7 +478,7 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // Validasi Kelengkapan Data
+  // Validasi Kelengkapan Data (Termasuk Pemeriksaan Jam Minimal Guru & Keseimbangan Jenjang Kelas)
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
 
@@ -493,6 +497,20 @@ export const App: React.FC = () => {
         const extra = unassignedTeachers.length > 2 ? ` (+${unassignedTeachers.length - 2} lainnya)` : '';
         issues.push(`Guru belum memiliki penugasan jam: ${names}${extra}`);
       }
+
+      // Periksa kecukupan jam minimal guru
+      const underloadedTeachers = teachers.filter((t) => {
+        const totalJP = lessons
+          .filter((l) => l.teacher_id === t.id)
+          .reduce((sum, l) => sum + Number(l.total_periods ?? l.total_periods_per_week ?? 0), 0);
+        const minTarget = t.min_periods_per_week ?? 24;
+        return totalJP > 0 && totalJP < minTarget;
+      });
+      if (underloadedTeachers.length > 0) {
+        issues.push(
+          `Ada ${underloadedTeachers.length} guru yang belum mencapai target jam mengajar minimal pekanan (Lihat menu Audit Jam & Jenjang).`
+        );
+      }
     }
 
     if (classes.length > 0 && lessons.length > 0) {
@@ -504,6 +522,29 @@ export const App: React.FC = () => {
         const extra = unassignedClasses.length > 3 ? ` (+${unassignedClasses.length - 3} lainnya)` : '';
         issues.push(`Kelas belum memiliki kartu pelajaran: ${names}${extra}`);
       }
+
+      // Periksa keseimbangan akumulasi jam per jenjang
+      const gradeGroups = new Map<number | string, number[]>();
+      classes.forEach((cls) => {
+        const g = cls.grade_level || 'Lainnya';
+        const totalJP = lessons
+          .filter((l) => l.class_id === cls.id)
+          .reduce((sum, l) => sum + Number(l.total_periods ?? l.total_periods_per_week ?? 0), 0);
+        if (!gradeGroups.has(g)) gradeGroups.set(g, []);
+        gradeGroups.get(g)!.push(totalJP);
+      });
+
+      gradeGroups.forEach((jpList, grade) => {
+        if (jpList.length > 1) {
+          const minJP = Math.min(...jpList);
+          const maxJP = Math.max(...jpList);
+          if (minJP !== maxJP) {
+            issues.push(
+              `Akumulasi jam pekanan pada Jenjang Kelas ${grade} belum seragam (${minJP} s.d. ${maxJP} JP).`
+            );
+          }
+        }
+      });
     }
 
     if (lessons.length > 0) {
@@ -529,7 +570,7 @@ export const App: React.FC = () => {
 
       if (invalidLessons.length > 0) {
         issues.push(
-          `Ada ${invalidLessons.length} kartu beban mengajar yang pola pecah bloknya belum sesuai dengan total JP atau zona slotnya belum diatur.`
+          `Ada ${invalidLessons.length} kartu beban mengajar yang pola pecah bloknya belum sesuai dengan total JP.`
         );
       }
     }
@@ -855,15 +896,15 @@ export const App: React.FC = () => {
 
     if (!validationStatus.isValid) {
       const warningMessage =
-        'PERINGATAN: Pengaturan data jadwal belum lengkap:\n\n' +
+        'PERINGATAN: Terdapat catatan pada pemeriksaan kelengkapan & keseimbangan data:\n\n' +
         validationStatus.issues.map((issue) => `• ${issue}`).join('\n') +
-        '\n\nMenyusun jadwal dalam kondisi data belum lengkap berpotensi menghasilkan jadwal yang tidak optimal atau tidak memenuhi target jam.\n\nApakah Anda yakin tetap ingin melanjutkan proses generate jadwal otomatis?';
+        '\n\nApakah Anda yakin tetap ingin melanjutkan proses generate jadwal otomatis?';
 
       const proceed = window.confirm(warningMessage);
       if (!proceed) return;
     } else {
       const proceed = window.confirm(
-        'Seluruh data guru, kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin solver Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
+        'Seluruh data guru, keseimbangan jenjang kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin solver Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
       );
       if (!proceed) return;
     }
@@ -1083,7 +1124,6 @@ export const App: React.FC = () => {
                   </span>
                 )}
 
-                {/* Indikator Konflik Data */}
                 {conflictCount > 0 && (
                   <button
                     onClick={() => setIsConflictModalOpen(true)}
@@ -1095,7 +1135,6 @@ export const App: React.FC = () => {
                   </button>
                 )}
 
-                {/* Indikator Antrean Sync */}
                 {pendingQueueCount > 0 && (
                   <button
                     onClick={triggerAutoSync}
@@ -1135,7 +1174,6 @@ export const App: React.FC = () => {
               </button>
             )}
 
-            {/* Panel Token: Hanya Admin */}
             {isAdmin && (
               <button
                 onClick={() => setIsAdminModalOpen(true)}
@@ -1212,13 +1250,33 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
+            {/* TOMBOL BARU: KEBIJAKAN BEBAN GURU FLEKSIBEL */}
+            <button
+              onClick={() => setIsTeacherPolicyOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 text-xs font-semibold transition shadow-sm"
+              title="Atur maksimal jam berturut-turut, larangan full day, dan maks harian"
+            >
+              <ShieldCheck className="w-4 h-4 text-indigo-600" />
+              <span>Kebijakan Guru</span>
+            </button>
+
+            {/* TOMBOL BARU: AUDIT JAM GURU & KESEIMBANGAN JENJANG KELAS */}
+            <button
+              onClick={() => setIsWorkloadAuditOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-teal-300 bg-teal-50 hover:bg-teal-100 text-teal-900 text-xs font-semibold transition shadow-sm"
+              title="Cek pemenuhan jam minimal guru dan keseimbangan akumulatif jam per jenjang kelas"
+            >
+              <Scale className="w-4 h-4 text-teal-700" />
+              <span>Audit Jam & Jenjang</span>
+            </button>
+
             {/* TOMBOL GENERATE JADWAL OTOMATIS (SELALU AKTIF) */}
             <button
               onClick={handleTriggerSolver}
               disabled={isGenerating}
               title={
                 !validationStatus.isValid
-                  ? 'Pengaturan data belum lengkap. Klik untuk melihat detail & konfirmasi generate.'
+                  ? 'Ada catatan kelengkapan/keseimbangan data. Klik untuk melihat detail & konfirmasi.'
                   : 'Klik untuk membuat jadwal otomatis'
               }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
@@ -1267,7 +1325,7 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2">
               <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
-                <strong>Mode Offline Aktif:</strong> Anda tetap dapat mengatur kartu mapel, hari & jam kerja, dan mencetak jadwal. Setiap perubahan disimpan ke antrean lokal ({pendingQueueCount} data) dan otomatis tersinkronisasi saat kembali online.
+                <strong>Mode Offline Aktif:</strong> Anda tetap dapat mengatur kartu mapel, hari & jam kerja, mengecek Audit Jam & Jenjang, serta mencetak jadwal. Perubahan disimpan ke antrean lokal ({pendingQueueCount} data) dan otomatis disinkronkan saat kembali online.
               </span>
             </div>
           </div>
@@ -1280,14 +1338,14 @@ export const App: React.FC = () => {
           <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div className="flex-1">
-              <span className="font-bold">Pengaturan jadwal belum lengkap:</span>
+              <span className="font-bold">Catatan Kelengkapan & Keseimbangan Jadwal:</span>
               <ul className="list-disc list-inside mt-1 space-y-0.5 text-amber-800 text-[11px]">
                 {validationStatus.issues.map((issue, idx) => (
                   <li key={idx}>{issue}</li>
                 ))}
               </ul>
               <p className="mt-1.5 text-[11px] text-amber-700 italic">
-                * Tombol "Generate Jadwal Otomatis" tetap dapat ditekan jika Anda ingin memaksakan penyusunan jadwal.
+                * Buka menu <strong>"Audit Jam & Jenjang"</strong> untuk melihat rincian per guru/kelas, atau tetap klik <strong>"Generate Jadwal Otomatis"</strong> untuk melanjutkan.
               </p>
             </div>
           </div>
@@ -1488,6 +1546,27 @@ export const App: React.FC = () => {
           )}
         </div>
       </main>
+
+      {/* MODAL KEBIJAKAN BEBAN MENGAJAR GURU */}
+      {session?.user?.id && (
+        <TeacherPolicyModal
+          isOpen={isTeacherPolicyOpen}
+          onClose={() => setIsTeacherPolicyOpen(false)}
+          teachers={teachers}
+          schoolId={session.user.id}
+          onDataUpdated={fetchAllData}
+        />
+      )}
+
+      {/* MODAL AUDIT JAM GURU & KESEIMBANGAN JENJANG KELAS */}
+      <WorkloadAuditModal
+        isOpen={isWorkloadAuditOpen}
+        onClose={() => setIsWorkloadAuditOpen(false)}
+        teachers={teachers}
+        classes={classes}
+        lessons={lessons}
+        subjects={subjects}
+      />
 
       {/* MODAL CONFLICT RESOLVER */}
       {session?.user?.id && (
