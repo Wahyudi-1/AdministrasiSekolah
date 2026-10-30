@@ -38,6 +38,7 @@ export interface Teacher {
   full_name: string;
   max_periods_per_day: number;
   max_consecutive_periods?: number;
+  max_idle_gap_per_day?: number; // <-- TAMBAHKAN BARIS INI
   disallow_full_day?: boolean;
   min_periods_per_week?: number;
   unavailable_slots: UnavailableRule[];
