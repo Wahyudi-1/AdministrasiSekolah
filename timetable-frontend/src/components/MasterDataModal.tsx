@@ -10,6 +10,7 @@ import {
   Pencil,
   Check,
   Building2,
+  RotateCcw,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { Teacher, Subject, ClassRoom, Room } from '../types';
@@ -21,7 +22,7 @@ interface Props {
   subjects: Subject[];
   classes: ClassRoom[];
   rooms?: Room[];
-  schoolId: string; // <-- Isolasi Multi-Tenant
+  schoolId: string;
   onDataUpdated: () => void;
 }
 
@@ -265,7 +266,7 @@ export const MasterDataModal: React.FC<Props> = ({
     }
   };
 
-  // --- HANDLER HAPUS (DILINDUNGI SCHOOL_ID) ---
+  // --- HANDLER HAPUS SATUAN ---
   const handleDelete = async (
     table: 'teachers' | 'subjects' | 'classes' | 'rooms',
     id: string,
@@ -291,13 +292,42 @@ export const MasterDataModal: React.FC<Props> = ({
     }
   };
 
+  // --- HANDLER RESET / KOSONGKAN SELURUH DATA KATEGORI ---
+  const handleResetAllCategory = async (
+    table: 'teachers' | 'subjects' | 'classes' | 'rooms',
+    labelCategory: string
+  ) => {
+    const confirmation = prompt(
+      `PERINGATAN: Anda akan menghapus SELURUH data ${labelCategory} milik sekolah ini!\n\nKetik kata "RESET" untuk mengonfirmasi:`
+    );
+    if (confirmation !== 'RESET') return;
+
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq('school_id', schoolId);
+      if (error) throw error;
+
+      resetForms();
+      onDataUpdated();
+      alert(`Seluruh data ${labelCategory} berhasil dikosongkan!`);
+    } catch (err: any) {
+      setErrorMsg(`Gagal mereset data: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header Modal */}
-        <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+        {/* Header Modal (Diberi shrink-0 agar tidak terkompres) */}
+        <div className="p-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-lg font-bold">Kelola Data Master Sekolah</h2>
+            <h2 className="text-base font-bold">Kelola Data Master Sekolah</h2>
             <p className="text-xs text-slate-400">
               Tambah, edit, dan kelola Guru, Mata Pelajaran, Kelas, dan Ruangan Khusus
             </p>
@@ -313,8 +343,8 @@ export const MasterDataModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Tab Navigasi */}
-        <div className="flex border-b border-slate-200 bg-slate-50 px-4 pt-2 gap-2 text-xs font-semibold overflow-x-auto">
+        {/* Tab Navigasi (Diberi shrink-0 agar selalu tampil utuh & tidak terpotong) */}
+        <div className="flex border-b border-slate-200 bg-slate-50 px-4 pt-2 gap-2 text-xs font-semibold overflow-x-auto shrink-0">
           <button
             onClick={() => {
               setActiveTab('TEACHER');
@@ -322,7 +352,7 @@ export const MasterDataModal: React.FC<Props> = ({
             }}
             className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
               activeTab === 'TEACHER'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -335,7 +365,7 @@ export const MasterDataModal: React.FC<Props> = ({
             }}
             className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
               activeTab === 'SUBJECT'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -348,7 +378,7 @@ export const MasterDataModal: React.FC<Props> = ({
             }}
             className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
               activeTab === 'CLASS'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -361,7 +391,7 @@ export const MasterDataModal: React.FC<Props> = ({
             }}
             className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
               activeTab === 'ROOM'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -371,14 +401,14 @@ export const MasterDataModal: React.FC<Props> = ({
 
         {/* Notifikasi Error */}
         {errorMsg && (
-          <div className="mx-6 mt-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+          <div className="mx-6 mt-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2 shrink-0">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{errorMsg}</span>
           </div>
         )}
 
         {/* Konten Tab */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1 text-sm">
+        <div className="p-6 overflow-y-auto space-y-5 flex-1 text-sm">
           {/* TAB 1: GURU */}
           {activeTab === 'TEACHER' && (
             <div className="space-y-4">
@@ -416,10 +446,10 @@ export const MasterDataModal: React.FC<Props> = ({
                     <input
                       type="number"
                       min={1}
-                      max={12}
+                      max={14}
                       value={maxPeriods}
                       onChange={(e) => setMaxPeriods(Number(e.target.value))}
-                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white text-center"
+                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white text-center font-bold"
                     />
                   </div>
                   <div className="flex-1 flex gap-1.5">
@@ -446,14 +476,32 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
+              {/* Baris Tombol Reset & Judul Tabel */}
+              <div className="flex items-center justify-between pt-1">
+                <span className="font-bold text-slate-700 text-xs">Daftar Guru Terdaftar ({teachers.length})</span>
+                {teachers.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetAllCategory('teachers', 'Guru')}
+                    disabled={loading}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
+                    title="Kosongkan seluruh data guru untuk sekolah ini"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Kosongkan Semua Guru</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Tabel Guru (Header diberi sticky top-0 agar tidak hilang saat scroll) */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[340px] overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
-                      <th className="p-2.5 w-20 text-center">Kode</th>
-                      <th className="p-2.5">Nama Guru</th>
-                      <th className="p-2.5 w-28 text-center">Batas JP/Hari</th>
-                      <th className="p-2.5 w-24 text-center">Aksi</th>
+                      <th className="p-2.5 w-20 text-center bg-slate-100">Kode</th>
+                      <th className="p-2.5 bg-slate-100">Nama Guru</th>
+                      <th className="p-2.5 w-28 text-center bg-slate-100">Batas JP/Hari</th>
+                      <th className="p-2.5 w-24 text-center bg-slate-100">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -538,7 +586,7 @@ export const MasterDataModal: React.FC<Props> = ({
                     }`}
                   >
                     {editingSubjectId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                    <span>{editingSubjectId ? 'Simpan Perubahan' : 'Tambah Mapel'}</span>
+                    <span>{editingSubjectId ? 'Simpan' : 'Tambah Mapel'}</span>
                   </button>
                   {editingSubjectId && (
                     <button
@@ -552,13 +600,30 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
+              {/* Baris Tombol Reset Mapel */}
+              <div className="flex items-center justify-between pt-1">
+                <span className="font-bold text-slate-700 text-xs">Daftar Mata Pelajaran ({subjects.length})</span>
+                {subjects.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetAllCategory('subjects', 'Mata Pelajaran')}
+                    disabled={loading}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
+                    title="Kosongkan seluruh mata pelajaran untuk sekolah ini"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Kosongkan Semua Mapel</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[340px] overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
-                      <th className="p-2.5 w-24 text-center">Kode</th>
-                      <th className="p-2.5">Nama Mata Pelajaran</th>
-                      <th className="p-2.5 w-24 text-center">Aksi</th>
+                      <th className="p-2.5 w-24 text-center bg-slate-100">Kode</th>
+                      <th className="p-2.5 bg-slate-100">Nama Mata Pelajaran</th>
+                      <th className="p-2.5 w-24 text-center bg-slate-100">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -627,7 +692,7 @@ export const MasterDataModal: React.FC<Props> = ({
                   <select
                     value={gradeLevel}
                     onChange={(e) => setGradeLevel(Number(e.target.value))}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white font-medium"
                   >
                     <option value={7}>Kelas 7 (SMP)</option>
                     <option value={8}>Kelas 8 (SMP)</option>
@@ -646,7 +711,7 @@ export const MasterDataModal: React.FC<Props> = ({
                     }`}
                   >
                     {editingClassId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                    <span>{editingClassId ? 'Simpan Perubahan' : 'Tambah Kelas'}</span>
+                    <span>{editingClassId ? 'Simpan' : 'Tambah Kelas'}</span>
                   </button>
                   {editingClassId && (
                     <button
@@ -660,13 +725,30 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
+              {/* Baris Tombol Reset Kelas */}
+              <div className="flex items-center justify-between pt-1">
+                <span className="font-bold text-slate-700 text-xs">Daftar Kelas Rombel ({classes.length})</span>
+                {classes.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetAllCategory('classes', 'Kelas')}
+                    disabled={loading}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
+                    title="Kosongkan seluruh data kelas untuk sekolah ini"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Kosongkan Semua Kelas</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[340px] overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
-                      <th className="p-2.5">Nama Kelas</th>
-                      <th className="p-2.5 w-28 text-center">Tingkat</th>
-                      <th className="p-2.5 w-24 text-center">Aksi</th>
+                      <th className="p-2.5 bg-slate-100">Nama Kelas</th>
+                      <th className="p-2.5 w-28 text-center bg-slate-100">Tingkat</th>
+                      <th className="p-2.5 w-24 text-center bg-slate-100">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -753,7 +835,7 @@ export const MasterDataModal: React.FC<Props> = ({
                     }`}
                   >
                     {editingRoomId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                    <span>{editingRoomId ? 'Simpan Perubahan' : 'Tambah Ruangan'}</span>
+                    <span>{editingRoomId ? 'Simpan' : 'Tambah Ruangan'}</span>
                   </button>
                   {editingRoomId && (
                     <button
@@ -767,13 +849,30 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
+              {/* Baris Tombol Reset Ruangan */}
+              <div className="flex items-center justify-between pt-1">
+                <span className="font-bold text-slate-700 text-xs">Daftar Ruangan Khusus ({rooms.length})</span>
+                {rooms.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetAllCategory('rooms', 'Ruangan Khusus')}
+                    disabled={loading}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
+                    title="Kosongkan seluruh ruangan khusus untuk sekolah ini"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Kosongkan Semua Ruangan</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[340px] overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
-                      <th className="p-2.5">Nama Ruangan Khusus</th>
-                      <th className="p-2.5 w-36 text-center">Kategori</th>
-                      <th className="p-2.5 w-24 text-center">Aksi</th>
+                      <th className="p-2.5 bg-slate-100">Nama Ruangan Khusus</th>
+                      <th className="p-2.5 w-36 text-center bg-slate-100">Kategori</th>
+                      <th className="p-2.5 w-24 text-center bg-slate-100">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -822,8 +921,8 @@ export const MasterDataModal: React.FC<Props> = ({
           )}
         </div>
 
-        {/* Footer Modal */}
-        <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+        {/* Footer Modal (Diberi shrink-0) */}
+        <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
           <button
             onClick={() => {
               resetForms();
