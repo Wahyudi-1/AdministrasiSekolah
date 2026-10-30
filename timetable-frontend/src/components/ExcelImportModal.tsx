@@ -7,9 +7,10 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   onDataImported: () => void;
+  schoolId: string; // <-- 1. Tambahkan prop schoolId
 }
 
-export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImported }) => {
+export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImported, schoolId }) => {
   const [file, setFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [importSummary, setImportSummary] = useState<{
@@ -73,6 +74,11 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       return;
     }
 
+    if (!schoolId) {
+      setErrorMessage('ID Sekolah tidak ditemukan. Silakan muat ulang halaman.');
+      return;
+    }
+
     setIsLoading(true);
     setErrorMessage('');
     setImportSummary(null);
@@ -91,6 +97,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetGuruName]);
         const teacherRecords = rows
           .map((r) => ({
+            school_id: schoolId, // <-- Tambahkan school_id
             teacher_code: String(r['Kode Guru*'] || r['Kode Guru'] || r['KODE'] || '').trim().toUpperCase(),
             full_name: String(r['Nama Lengkap & Gelar*'] || r['Nama Guru'] || r['NAMA'] || '').trim(),
             max_periods_per_day: Number(r['Maks JP Per Hari'] || 6),
@@ -100,7 +107,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
 
         if (teacherRecords.length > 0) {
           const { error } = await supabase.from('teachers').upsert(teacherRecords, {
-            onConflict: 'teacher_code',
+            onConflict: 'school_id,teacher_code', // <-- Sesuai constraint database
           });
           if (error) throw error;
           importedTeachers = teacherRecords.length;
@@ -115,6 +122,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetMapelName]);
         const subjectRecords = rows
           .map((r) => ({
+            school_id: schoolId, // <-- Tambahkan school_id
             subject_code: String(r['Kode Mapel*'] || r['Kode Mapel'] || r['KODE'] || '').trim().toUpperCase(),
             subject_name: String(r['Nama Mata Pelajaran*'] || r['Nama Mapel'] || r['MAPEL'] || '').trim(),
           }))
@@ -122,7 +130,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
 
         if (subjectRecords.length > 0) {
           const { error } = await supabase.from('subjects').upsert(subjectRecords, {
-            onConflict: 'subject_code',
+            onConflict: 'school_id,subject_code', // <-- Sesuai constraint database
           });
           if (error) throw error;
           importedSubjects = subjectRecords.length;
@@ -137,6 +145,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetKelasName]);
         const classRecords = rows
           .map((r) => ({
+            school_id: schoolId, // <-- Tambahkan school_id
             class_name: String(r['Nama Kelas*'] || r['Kelas'] || r['ROMBEL'] || '').trim(),
             grade_level: Number(r['Tingkat (7-12)*'] || r['Tingkat'] || 10),
           }))
@@ -144,7 +153,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
 
         if (classRecords.length > 0) {
           const { error } = await supabase.from('classes').upsert(classRecords, {
-            onConflict: 'class_name',
+            onConflict: 'school_id,class_name', // <-- Sesuai constraint database
           });
           if (error) throw error;
           importedClasses = classRecords.length;
@@ -168,7 +177,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col">
-        
         {/* Header Modal */}
         <div className="p-4 bg-emerald-800 text-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -185,7 +193,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
 
         {/* Badan Modal */}
         <div className="p-6 space-y-4 text-xs">
-          
           {/* Instruksi & Download Template */}
           <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3">
             <div>
@@ -246,7 +253,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
               <span>{errorMessage}</span>
             </div>
           )}
-
         </div>
 
         {/* Footer Modal */}
@@ -279,7 +285,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
             )}
           </button>
         </div>
-
       </div>
     </div>
   );
