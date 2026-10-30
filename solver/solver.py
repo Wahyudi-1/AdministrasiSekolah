@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import math
 from supabase import create_client, Client
 from ortools.sat.python import cp_model
 
@@ -91,6 +92,8 @@ def main():
 
         slot_by_day_period = {(s["day_index"], s["period_number"]): s for s in teaching_slots}
         days_sorted = sorted(list(active_day_indices))
+        num_active_days = max(len(days_sorted), 1)
+
         periods_by_day = {}
         for d in days_sorted:
             periods_by_day[d] = sorted([s["period_number"] for s in teaching_slots if s["day_index"] == d])
@@ -98,10 +101,16 @@ def main():
         model = cp_model.CpModel()
 
         meetings = []
+        teacher_total_jp = {}
+
         for l in lessons:
             total_jp = int(l.get("total_periods") or l.get("total_periods_per_week") or 0)
             if total_jp <= 0:
                 continue
+
+            t_id = l["teacher_id"]
+            teacher_total_jp[t_id] = teacher_total_jp.get(t_id, 0) + total_jp
+
             blocks = parse_split_pattern(l.get("split_pattern"), total_jp)
             allowed_zone = l.get("allowed_slot_types") or "FORMAL"
 
@@ -109,7 +118,7 @@ def main():
                 meetings.append({
                     "id": f"{l['id']}_{b_idx}",
                     "lesson_id": l["id"],
-                    "teacher_id": l["teacher_id"],
+                    "teacher_id": t_id,
                     "class_id": l["class_id"],
                     "room_id": l.get("preferred_room_id"),
                     "duration": duration,
@@ -190,8 +199,9 @@ def main():
                 if len(vars_rm) > 1:
                     model.Add(sum(vars_rm) <= 1)
 
-        # Constraint 3: Kebijakan Fleksibel Beban Mengajar Guru (Jam Berhalangan, Maks Harian, Maks Beruntun, Anti Full Day)
+        # Constraint 3: Kebijakan Fleksibel Beban Mengajar Guru & Soft Constraint Pemerataan Harian
         teacher_map = {t["id"]: t for t in teachers}
+        soft_penalty_terms = []
 
         for t_id, t_data in teacher_map.items():
             max_per_day = int(t_data.get("max_periods_per_day") or 8)
@@ -205,7 +215,7 @@ def main():
                 except Exception:
                     unavail = []
 
-            # 3A. Jam Berhalangan Mengajar Guru
+            # 3A. Hard Constraint: Jam Berhalangan Mengajar Guru
             for rule in unavail:
                 r_day = int(rule.get("day_index", 0))
                 r_periods = rule.get("periods", "ALL")
@@ -215,6 +225,11 @@ def main():
                             for m_idx, var in slot_coverage[s["id"]]:
                                 if meetings[m_idx]["teacher_id"] == t_id:
                                     model.Add(var == 0)
+
+            # Hitung rata-rata jam ideal harian untuk guru ini
+            total_t_jp = teacher_total_jp.get(t_id, 0)
+            ideal_daily_avg = math.ceil(total_t_jp / num_active_days) if total_t_jp > 0 else 0
+            daily_load_vars = []
 
             # 3B. Evaluasi Harian per Guru
             for d in days_sorted:
@@ -236,21 +251,48 @@ def main():
                 if total_slots_in_day == 0:
                     continue
 
-                # 3C. Batas Maksimal Jam Mengajar dalam 1 Hari
-                model.Add(sum(day_teaching_vars) <= max_per_day)
+                # Variabel beban mengajar guru t pada hari d
+                daily_load = model.NewIntVar(0, total_slots_in_day, f"load_{t_id}_d{d}")
+                model.Add(daily_load == sum(day_teaching_vars))
+                daily_load_vars.append(daily_load)
 
-                # 3D. Larangan Full Mengajar dari Periode Pertama sampai Akhir (Wajib minimal 1 periode kosong)
+                # 3C. Hard Constraint: Batas Maksimal Jam Mengajar dalam 1 Hari
+                model.Add(daily_load <= max_per_day)
+
+                # 3D. Hard Constraint: Larangan Full Mengajar dari Periode Pertama sampai Akhir
                 if disallow_full_day and total_slots_in_day >= 4:
-                    model.Add(sum(day_teaching_vars) <= total_slots_in_day - 1)
+                    model.Add(daily_load <= total_slots_in_day - 1)
 
-                # 3E. Batas Maksimal Jam Mengajar Berturut-Turut (Sliding Window)
+                # 3E. Hard Constraint: Batas Maksimal Jam Mengajar Berturut-Turut (Sliding Window)
                 window_size = max_consecutive + 1
                 if total_slots_in_day >= window_size:
                     for w_start in range(total_slots_in_day - window_size + 1):
                         window = day_teaching_vars[w_start : w_start + window_size]
                         model.Add(sum(window) <= max_consecutive)
 
-        update_job(JOB_ID, "processing", "Menjalankan optimasi CP-SAT Google OR-Tools...")
+                # 3F. Soft Constraint: Penalti Deviasi jika beban hari ini melebihi rata-rata ideal
+                if total_t_jp > 0:
+                    overload_day = model.NewIntVar(0, total_slots_in_day, f"over_{t_id}_d{d}")
+                    model.Add(overload_day >= daily_load - ideal_daily_avg)
+                    # Bobot penalti 10 per JP kelebihan di atas rata-rata harian
+                    soft_penalty_terms.append(overload_day * 10)
+
+            # 3G. Soft Constraint: Minimalkan Puncak Beban Harian (Min-Max Daily Load Balancing)
+            if daily_load_vars and total_t_jp > 0:
+                peak_load = model.NewIntVar(0, 16, f"peak_{t_id}")
+                model.AddMaxEquality(peak_load, daily_load_vars)
+                # Bobot penalti 25 untuk menekan puncak jam tertinggi agar merata ke hari lain
+                soft_penalty_terms.append(peak_load * 25)
+
+        # Terapkan Fungsi Objektif (Minimalkan Penalti Ketidakmerataan)
+        if soft_penalty_terms:
+            model.Minimize(sum(soft_penalty_terms))
+
+        update_job(
+            JOB_ID,
+            "processing",
+            "Menjalankan optimasi CP-SAT & pemerataan beban harian guru...",
+        )
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 30.0
         solver.parameters.num_search_workers = 4
@@ -289,7 +331,8 @@ def main():
             supabase.table("schedules").insert(schedule_rows).execute()
 
         elapsed_ms = int((time.time() - start_time) * 1000)
-        msg = f"SUKSES: Berhasil menyusun {len(schedule_rows)} slot jam pelajaran tanpa bentrok."
+        status_label = "OPTIMAL" if status == cp_model.OPTIMAL else "FEASIBLE"
+        msg = f"SUKSES ({status_label}): Berhasil menyusun {len(schedule_rows)} slot jam pelajaran secara merata tanpa bentrok."
         print(msg)
         update_job(JOB_ID, "completed", msg, elapsed_ms)
 
