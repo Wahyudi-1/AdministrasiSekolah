@@ -98,7 +98,7 @@ export const App: React.FC = () => {
   const [filterMode, setFilterMode] = useState<'CLASS' | 'TEACHER'>('CLASS');
   const [selectedId, setSelectedId] = useState<string>('');
   const [printMode, setPrintMode] = useState<'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS'>('SINGLE');
-  const [showChartInPrint, setShowChartInPrint] = useState<boolean>(true); // Toggle cetak bar chart
+  const [showChartInPrint, setShowChartInPrint] = useState<boolean>(true);
 
   // State Modals
   const [isMasterModalOpen, setIsMasterModalOpen] = useState<boolean>(false);
@@ -598,7 +598,7 @@ export const App: React.FC = () => {
     const schoolId = session?.user?.id;
     if (!schoolId || !configAssignmentKey || configTargetClassIds.length === 0) return;
 
-    const [, sId] = configAssignmentKey.split('__');
+    const [tId, sId] = configAssignmentKey.split('__');
     const targetPair = uniqueSubjectTeacherPairs.find((p) => p.key === configAssignmentKey);
     const expectedTotalJP = targetPair?.totalPeriods || 4;
 
@@ -618,7 +618,7 @@ export const App: React.FC = () => {
 
     try {
       const updatedLessons = lessons.map((l) => {
-        if (configTargetClassIds.includes(l.class_id) && l.subject_id === sId) {
+        if (configTargetClassIds.includes(l.class_id) && l.teacher_id === tId && l.subject_id === sId) {
           return {
             ...l,
             split_pattern: cleanPatternString,
@@ -633,7 +633,9 @@ export const App: React.FC = () => {
       updateLocalOfflineCache(schoolId, { lessons: updatedLessons });
 
       for (const classId of configTargetClassIds) {
-        const existing = lessons.find((l) => l.class_id === classId && l.subject_id === sId);
+        const existing = lessons.find(
+          (l) => l.class_id === classId && l.teacher_id === tId && l.subject_id === sId
+        );
         if (existing) {
           enqueueSyncAction({
             school_id: schoolId,
@@ -872,6 +874,7 @@ export const App: React.FC = () => {
       payload: { unavailable_slots: [] },
       description: `Reset syarat jam (${teacherId})`,
     });
+
     refreshQueueCount();
     if (isOnline) triggerAutoSync();
   };
@@ -1547,7 +1550,12 @@ export const App: React.FC = () => {
       />
 
       {/* MODAL IMPORT EXCEL */}
-      <ExcelImportModal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} onDataImported={fetchAllData} />
+      <ExcelImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        schoolId={session.user.id}
+        onDataImported={fetchAllData}
+      />
 
       {/* MODAL PENUGASAN GURU */}
       <AssignmentModal
