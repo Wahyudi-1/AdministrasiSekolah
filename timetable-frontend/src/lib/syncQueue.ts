@@ -1,4 +1,4 @@
-import { setIDBValue, getIDBValue } from './idb';
+import { setIDBValue } from './idb';
 
 export interface SyncQueueItem {
   id: string;
@@ -9,8 +9,8 @@ export interface SyncQueueItem {
   matchColumn?: string;
   matchValue?: any;
   timestamp: number;
-  updated_at: string; // ISO String saat offline
-  expected_version?: number; // OCC Versioning
+  updated_at: string;
+  expected_version?: number;
   description: string;
 }
 
@@ -27,11 +27,10 @@ export const getSyncQueue = (schoolId: string): SyncQueueItem[] => {
   }
 };
 
-// Simpan antrean ke LocalStorage dan IndexedDB (agar terbaca oleh Service Worker)
+// Simpan antrean ke LocalStorage dan IndexedDB
 export const saveSyncQueue = (schoolId: string, queue: SyncQueueItem[]) => {
   try {
     localStorage.setItem(`${QUEUE_KEY_PREFIX}${schoolId}`, JSON.stringify(queue));
-    // Simpan ke IndexedDB untuk dibaca Service Worker saat Native Background Sync
     setIDBValue('sync_queue', 'items', queue).catch((err) =>
       console.warn('Gagal sync ke IDB:', err)
     );
@@ -40,7 +39,7 @@ export const saveSyncQueue = (schoolId: string, queue: SyncQueueItem[]) => {
   }
 };
 
-// Tambahkan aksi ke antrean dengan timestamp & versioning
+// Tambahkan aksi ke antrean dengan isolasi school_id
 export const enqueueSyncAction = (
   item: Omit<SyncQueueItem, 'id' | 'timestamp' | 'updated_at'> & {
     expected_version?: number;
@@ -60,7 +59,6 @@ export const enqueueSyncAction = (
   queue.push(fullItem);
   saveSyncQueue(item.school_id, queue);
 
-  // Daftarkan Native SyncManager jika didukung oleh peramban
   if ('serviceWorker' in navigator && 'SyncManager' in window) {
     navigator.serviceWorker.ready
       .then((reg: any) => reg.sync.register('sync-timetable-mutations'))
@@ -70,7 +68,7 @@ export const enqueueSyncAction = (
   return fullItem;
 };
 
-// Sinkronisasi manual dari UI React (Client-side fallback)
+// Sinkronisasi dengan isolasi ketat school_id
 export const processSyncQueue = async (
   supabase: any,
   schoolId: string
@@ -79,21 +77,88 @@ export const processSyncQueue = async (
   if (queue.length === 0) return { success: true, processedCount: 0, conflictCount: 0 };
 
   try {
+    // 1. Coba eksekusi melalui RPC jika fungsi PostgreSQL tersedia
     const { data, error } = await supabase.rpc('process_offline_sync', {
       mutations: queue,
     });
 
-    if (error) throw error;
-
-    // Kosongkan antrean setelah dieksekusi oleh RPC
-    saveSyncQueue(schoolId, []);
-    return {
-      success: true,
-      processedCount: data?.processed || 0,
-      conflictCount: data?.conflicts || 0,
-    };
-  } catch (err: any) {
-    console.error('Gagal memproses sync queue RPC:', err);
-    throw err;
+    if (!error) {
+      saveSyncQueue(schoolId, []);
+      return {
+        success: true,
+        processedCount: data?.processed || queue.length,
+        conflictCount: data?.conflicts || 0,
+      };
+    }
+  } catch (rpcErr) {
+    console.warn('RPC process_offline_sync gagal atau belum tersedia, beralih ke direct fallback:', rpcErr);
   }
+
+  // 2. Direct Fallback: Eksekusi antrean langsung ke tabel dengan isolasi school_id yang ketat
+  let processed = 0;
+  let conflicts = 0;
+  const remainingQueue: SyncQueueItem[] = [];
+
+  for (const item of queue) {
+    try {
+      if (item.operation === 'insert') {
+        const payloadWithTenant = Array.isArray(item.payload)
+          ? item.payload.map((p) => ({ ...p, school_id: schoolId }))
+          : { ...item.payload, school_id: schoolId };
+
+        const { error } = await supabase.table(item.table).insert(payloadWithTenant);
+        if (error) throw error;
+        processed++;
+      } else if (item.operation === 'upsert') {
+        const payloadWithTenant = Array.isArray(item.payload)
+          ? item.payload.map((p) => ({ ...p, school_id: schoolId }))
+          : { ...item.payload, school_id: schoolId };
+
+        const onConflictVal =
+          item.matchColumn ||
+          (item.table === 'teachers'
+            ? 'school_id,teacher_code'
+            : item.table === 'subjects'
+            ? 'school_id,subject_code'
+            : item.table === 'classes'
+            ? 'school_id,class_name'
+            : 'school_id,id');
+
+        const { error } = await supabase
+          .table(item.table)
+          .upsert(payloadWithTenant, { onConflict: onConflictVal });
+        if (error) throw error;
+        processed++;
+      } else if (item.operation === 'update') {
+        const matchCol = item.matchColumn || 'id';
+        const { error } = await supabase
+          .table(item.table)
+          .update(item.payload)
+          .eq('school_id', schoolId)
+          .eq(matchCol, item.matchValue);
+        if (error) throw error;
+        processed++;
+      } else if (item.operation === 'delete') {
+        const matchCol = item.matchColumn || 'id';
+        const { error } = await supabase
+          .table(item.table)
+          .delete()
+          .eq('school_id', schoolId)
+          .eq(matchCol, item.matchValue);
+        if (error) throw error;
+        processed++;
+      }
+    } catch (err: any) {
+      console.error(`Gagal memproses mutasi ${item.description}:`, err);
+      conflicts++;
+      remainingQueue.push(item);
+    }
+  }
+
+  saveSyncQueue(schoolId, remainingQueue);
+  return {
+    success: conflicts === 0,
+    processedCount: processed,
+    conflictCount: conflicts,
+  };
 };
