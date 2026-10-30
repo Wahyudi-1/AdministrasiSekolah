@@ -411,7 +411,7 @@ export const App: React.FC = () => {
     if (!isOnline) return;
 
     const jobsChannel = supabase
-      .channel('realtime_generation_jobs')
+      .channel(`realtime_generation_jobs_${session.user.id}`)
       .on(
         'postgres_changes',
         {
@@ -890,6 +890,11 @@ export const App: React.FC = () => {
       return;
     }
 
+    if (!session?.user?.id) {
+      alert('Sesi sekolah tidak valid. Silakan masuk kembali.');
+      return;
+    }
+
     if (!validationStatus.isValid) {
       const warningMessage =
         'PERINGATAN: Terdapat catatan pada pemeriksaan kelengkapan & keseimbangan data:\n\n' +
@@ -909,7 +914,7 @@ export const App: React.FC = () => {
     setJobStatus({ status: 'queued', message: 'Mendaftarkan job ke GitHub Actions...' });
 
     try {
-      await triggerScheduleGeneration();
+      await triggerScheduleGeneration(session.user.id);
     } catch (err: any) {
       alert(`Gagal memicu solver: ${err.message}`);
       setIsGenerating(false);
@@ -1539,34 +1544,42 @@ export const App: React.FC = () => {
       {isAdmin && <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />}
 
       {/* MODAL MASTER DATA */}
-      <MasterDataModal
-        isOpen={isMasterModalOpen}
-        onClose={() => setIsMasterModalOpen(false)}
-        teachers={teachers}
-        subjects={subjects}
-        classes={classes}
-        rooms={rooms}
-        onDataUpdated={fetchAllData}
-      />
+      {session?.user?.id && (
+        <MasterDataModal
+          isOpen={isMasterModalOpen}
+          onClose={() => setIsMasterModalOpen(false)}
+          teachers={teachers}
+          subjects={subjects}
+          classes={classes}
+          rooms={rooms}
+          schoolId={session.user.id}
+          onDataUpdated={fetchAllData}
+        />
+      )}
 
       {/* MODAL IMPORT EXCEL */}
-      <ExcelImportModal
-        isOpen={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
-        schoolId={session.user.id}
-        onDataImported={fetchAllData}
-      />
+      {session?.user?.id && (
+        <ExcelImportModal
+          isOpen={isImportModalOpen}
+          onClose={() => setIsImportModalOpen(false)}
+          schoolId={session.user.id}
+          onDataImported={fetchAllData}
+        />
+      )}
 
       {/* MODAL PENUGASAN GURU */}
-      <AssignmentModal
-        isOpen={isAssignmentModalOpen}
-        onClose={() => setIsAssignmentModalOpen(false)}
-        teachers={teachers}
-        subjects={subjects}
-        classes={classes}
-        lessons={lessons}
-        onDataUpdated={fetchAllData}
-      />
+      {session?.user?.id && (
+        <AssignmentModal
+          isOpen={isAssignmentModalOpen}
+          onClose={() => setIsAssignmentModalOpen(false)}
+          teachers={teachers}
+          subjects={subjects}
+          classes={classes}
+          lessons={lessons}
+          schoolId={session.user.id}
+          onDataUpdated={fetchAllData}
+        />
+      )}
 
       {/* MODAL KARTU BEBAN MENGAJAR */}
       {isLessonModalOpen && (
