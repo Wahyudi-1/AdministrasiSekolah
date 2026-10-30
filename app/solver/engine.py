@@ -1,6 +1,6 @@
 import os
 from ortools.sat.python import cp_model
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 def solve_school_timetable(
     work_days: List[Dict[str, Any]],
@@ -8,7 +8,8 @@ def solve_school_timetable(
     teachers: List[Dict[str, Any]],
     classes: List[Dict[str, Any]],
     rooms: List[Dict[str, Any]],
-    lessons: List[Dict[str, Any]]
+    lessons: List[Dict[str, Any]],
+    school_id: Optional[str] = None
 ) -> Dict[str, Any]:
     
     model = cp_model.CpModel()
@@ -20,6 +21,13 @@ def solve_school_timetable(
         if s["day_index"] in active_days and s["slot_type"] != "BREAK"
     ]
     valid_slots.sort(key=lambda x: (x["day_index"], x["period_number"]))
+
+    if not valid_slots:
+        return {
+            "status": "FAILED",
+            "schedule": [],
+            "message": "Tidak ada slot waktu aktif yang tersedia untuk penempatan jam pelajaran."
+        }
 
     slots_by_day: Dict[int, List[Dict[str, Any]]] = {}
     for s in valid_slots:
@@ -33,7 +41,7 @@ def solve_school_timetable(
         pattern_str = str(l.get("split_pattern", "1")).strip()
         parts = [int(p) for p in pattern_str.split("+") if p.strip().isdigit()]
         if not parts:
-            parts = [l["total_periods_per_week"]]
+            parts = [int(l.get("total_periods") or l.get("total_periods_per_week") or 2)]
 
         for idx, duration in enumerate(parts):
             sessions.append({
@@ -61,9 +69,11 @@ def solve_school_timetable(
             for i in range(len(day_slots) - dur + 1):
                 block = day_slots[i : i + dur]
                 
+                # Zona slot waktu harus sesuai (misal FORMAL, PRE, POST)
                 if not all(b["slot_type"] == allowed_type for b in block):
                     continue
 
+                # Kunci slot permanen jika ditentukan
                 if sess["locked_slot_id"] and block[0]["id"] != sess["locked_slot_id"]:
                     continue
 
@@ -78,15 +88,18 @@ def solve_school_timetable(
         if not possible_starts:
             return {
                 "status": "INFEASIBLE",
-                "message": f"Tidak ada slot waktu yang muat untuk pelajaran ID {sess['lesson_id']} (Durasi: {dur} JP, Zona: {allowed_type})."
+                "schedule": [],
+                "message": f"Tidak ada slot waktu muat untuk pelajaran ID {sess['lesson_id']} (Durasi: {dur} JP, Zona: {allowed_type})."
             }
+        
+        # Setiap sesi harus dimulai tepat 1 kali
         model.Add(sum(possible_starts) == 1)
 
     def is_session_active(sess_id: str, slot_id: str):
         vars_list = active_vars.get((sess_id, slot_id), [])
         return sum(vars_list) if vars_list else 0
 
-    # 4. HARD CONSTRAINT: Pecahan pertemuan dari mapel yang sama tidak boleh di hari yang sama
+    # 4. HARD CONSTRAINT: Pecahan pertemuan mapel yang sama tidak boleh di hari yang sama
     for l in lessons:
         l_sessions = [s for s in sessions if s["lesson_id"] == l["id"]]
         if len(l_sessions) > 1:
@@ -123,12 +136,14 @@ def solve_school_timetable(
             if active_in_slot:
                 model.Add(sum(active_in_slot) <= 1)
 
-    # 6. CONSTRAINT: Batas JP Harian Guru & JSON unavailable_slots
+    # 6. CONSTRAINT: Kebijakan Jam Guru (Batas Harian, Maks Berurutan, Full Day, & Larangan Jam)
     soft_penalties = []
 
     for t in teachers:
         t_id = t["id"]
-        max_per_day = t.get("max_periods_per_day", 8)
+        max_per_day = t.get("max_periods_per_day") or 8
+        max_consecutive = t.get("max_consecutive_periods") or 4
+        disallow_full_day = bool(t.get("disallow_full_day", False))
         t_sessions = [s["session_id"] for s in sessions if s["teacher_id"] == t_id]
 
         for day_idx, day_slots in slots_by_day.items():
@@ -138,9 +153,30 @@ def solve_school_timetable(
                 for s_id in t_sessions
                 if (s_id, slot["id"]) in active_vars
             ]
+            
             if daily_load:
+                # Batas total jam per hari
                 model.Add(sum(daily_load) <= max_per_day)
 
+                # Larangan mengajar penuh satu hari penuh tanpa sela
+                if disallow_full_day and len(day_slots) > 2:
+                    model.Add(sum(daily_load) <= len(day_slots) - 1)
+
+            # Batas jam berturut-turut
+            if max_consecutive and len(day_slots) > max_consecutive:
+                window_size = max_consecutive + 1
+                for w in range(len(day_slots) - window_size + 1):
+                    window_slots = day_slots[w : w + window_size]
+                    consec_vars = [
+                        is_session_active(s_id, sl["id"])
+                        for sl in window_slots
+                        for s_id in t_sessions
+                        if (s_id, sl["id"]) in active_vars
+                    ]
+                    if consec_vars:
+                        model.Add(sum(consec_vars) <= max_consecutive)
+
+        # Jam Berhalangan (unavailable_slots)
         rules = t.get("unavailable_slots") or []
         for rule in rules:
             day = rule.get("day_index")
@@ -168,12 +204,12 @@ def solve_school_timetable(
     if soft_penalties:
         model.Minimize(sum(soft_penalties))
 
-    # 7. Konfigurasi Eksekusi Solver (Otomatis menyesuaikan Render vs GitHub Actions)
+    # 7. Konfigurasi Solver Execution
     solver = cp_model.CpSolver()
     is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
     
     solver.parameters.max_time_in_seconds = 60.0 if is_github_actions else 30.0
-    solver.parameters.num_search_workers = 2 if is_github_actions else 1  # 1 worker hemat RAM untuk Render 512MB
+    solver.parameters.num_search_workers = 2 if is_github_actions else 1
 
     status = solver.Solve(model)
 
@@ -185,22 +221,26 @@ def solve_school_timetable(
                 sl_id = slot["id"]
                 if (s_id, sl_id) in active_vars:
                     if solver.Value(is_session_active(s_id, sl_id)) == 1:
-                        schedule_rows.append({
+                        record = {
                             "lesson_id": sess["lesson_id"],
                             "time_slot_id": sl_id,
                             "teacher_id": sess["teacher_id"],
                             "class_id": sess["class_id"],
                             "room_id": sess["room_id"],
                             "is_locked": bool(sess["locked_slot_id"])
-                        })
+                        }
+                        if school_id:
+                            record["school_id"] = school_id
+                        schedule_rows.append(record)
+
         return {
             "status": "SUCCESS",
             "schedule": schedule_rows,
-            "message": f"Berhasil menyusun {len(schedule_rows)} slot jam pelajaran tanpa bentrok."
+            "message": f"Berhasil menyusun {len(schedule_rows)} penempatan jam pelajaran tanpa bentrok."
         }
 
     return {
         "status": "FAILED",
         "schedule": [],
-        "message": "Jadwal tidak ditemukan (Infeasible). Periksa kembali beban jam guru atau ketersediaan slot waktu."
+        "message": "Jadwal tidak ditemukan (Infeasible). Periksa kembali batasan jam berhalangan guru atau ruang khusus."
     }
