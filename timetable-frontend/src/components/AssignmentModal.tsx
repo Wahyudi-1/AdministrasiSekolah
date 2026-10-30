@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, UserCheck, Plus, Trash2, AlertCircle, Check, CheckSquare, Square } from 'lucide-react';
+import { X, UserCheck, Plus, Trash2, AlertCircle, CheckSquare, Square } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { Teacher, Subject, ClassRoom, Lesson } from '../types';
 
@@ -10,6 +10,7 @@ interface Props {
   subjects: Subject[];
   classes: ClassRoom[];
   lessons: Lesson[];
+  schoolId: string; // <-- Isolasi Multi-Tenant
   onDataUpdated: () => void;
 }
 
@@ -20,6 +21,7 @@ export const AssignmentModal: React.FC<Props> = ({
   subjects,
   classes,
   lessons,
+  schoolId,
   onDataUpdated,
 }) => {
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
@@ -31,11 +33,9 @@ export const AssignmentModal: React.FC<Props> = ({
 
   if (!isOpen) return null;
 
-  // Set default pilihan pertama saat modal dibuka
   if (!selectedTeacherId && teachers.length > 0) setSelectedTeacherId(teachers[0].id);
   if (!selectedSubjectId && subjects.length > 0) setSelectedSubjectId(subjects[0].id);
 
-  // Toggle Pilihan Kelas
   const handleToggleClass = (classId: string) => {
     setSelectedClassIds((prev) =>
       prev.includes(classId) ? prev.filter((id) => id !== classId) : [...prev, classId]
@@ -50,7 +50,6 @@ export const AssignmentModal: React.FC<Props> = ({
     setSelectedClassIds([]);
   };
 
-  // Simpan Penugasan Guru ke Banyak Kelas Sekaligus
   const handleSaveAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTeacherId || !selectedSubjectId) {
@@ -66,7 +65,6 @@ export const AssignmentModal: React.FC<Props> = ({
     setErrorMsg('');
 
     try {
-      // Default pola pecah blok otomatis sesuai jumlah JP
       const defaultSplit =
         totalPeriods === 1 ? '1' :
         totalPeriods === 2 ? '2' :
@@ -75,12 +73,12 @@ export const AssignmentModal: React.FC<Props> = ({
         totalPeriods === 5 ? '3+2' : '3+3';
 
       for (const classId of selectedClassIds) {
+        // Cari lesson yang spesifik milik sekolah dan kelas tujuan
         const existing = lessons.find(
           (l) => l.class_id === classId && l.subject_id === selectedSubjectId
         );
 
         if (existing) {
-          // Update guru & total JP jika sudah ada
           const { error } = await supabase
             .from('lessons')
             .update({
@@ -88,12 +86,13 @@ export const AssignmentModal: React.FC<Props> = ({
               total_periods_per_week: Number(totalPeriods),
               total_periods: Number(totalPeriods),
             })
-            .eq('id', existing.id);
+            .eq('id', existing.id)
+            .eq('school_id', schoolId);
           if (error) throw error;
         } else {
-          // Insert kartu baru jika belum ada
           const { error } = await supabase.from('lessons').insert([
             {
+              school_id: schoolId,
               teacher_id: selectedTeacherId,
               subject_id: selectedSubjectId,
               class_id: classId,
@@ -118,11 +117,15 @@ export const AssignmentModal: React.FC<Props> = ({
     }
   };
 
-  // Hapus Penugasan
   const handleDeleteAssignment = async (id: string, label: string) => {
     if (!confirm(`Hapus penugasan "${label}"?`)) return;
-    const { error } = await supabase.from('lessons').delete().eq('id', id);
+    const { error } = await supabase
+      .from('lessons')
+      .delete()
+      .eq('id', id)
+      .eq('school_id', schoolId);
     if (!error) onDataUpdated();
+    else setErrorMsg(`Gagal menghapus penugasan: ${error.message}`);
   };
 
   return (
@@ -135,7 +138,7 @@ export const AssignmentModal: React.FC<Props> = ({
             <div>
               <h2 className="text-base font-bold">Penugasan Mengajar Guru (Distribusi Jam KBM)</h2>
               <p className="text-xs text-slate-400">
-                Atur guru, mapel, kelas tujuan (bisa multi-kelas), dan total JP per minggu
+                Atur guru, mapel, kelas tujuan (multi-kelas), dan total JP per minggu
               </p>
             </div>
           </div>
