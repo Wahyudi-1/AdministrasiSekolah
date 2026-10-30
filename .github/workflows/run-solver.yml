@@ -9,7 +9,7 @@ on:
         default: ''
       school_id:
         description: 'UUID Sekolah (Tenant ID)'
-        required: false
+        required: true
         default: ''
 
 jobs:
@@ -25,22 +25,26 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install OR-Tools & Supabase
+      - name: Install OR-Tools, Supabase & Dependencies
         run: |
           pip install --upgrade pip
-          pip install ortools supabase
+          if [ -f "app/requirements.txt" ]; then
+            pip install -r app/requirements.txt
+          else
+            pip install ortools supabase python-dotenv
+          fi
 
       - name: Jalankan Perhitungan Jadwal Multi-Sekolah
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           JOB_ID: ${{ github.event.inputs.job_id }}
           SCHOOL_ID: ${{ github.event.inputs.school_id }}
         run: |
-          if [ -f "solver/solver.py" ]; then
-            python solver/solver.py
-          elif [ -f "timetable-solver/solver.py" ]; then
-            python timetable-solver/solver.py
+          if [ -f "app/cli_solver.py" ]; then
+            python app/cli_solver.py "$JOB_ID" "$SCHOOL_ID"
+          elif [ -f "solver/solver.py" ]; then
+            python solver/solver.py "$JOB_ID" "$SCHOOL_ID"
           else
-            python solver.py
+            python cli_solver.py "$JOB_ID" "$SCHOOL_ID"
           fi
