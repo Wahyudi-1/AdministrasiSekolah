@@ -44,7 +44,6 @@ def main():
     start_time = time.time()
     global JOB_ID, SCHOOL_ID
 
-    # Jika dijalankan manual tanpa input, ambil job queued terbaru
     if not JOB_ID:
         res = (
             supabase.table("generation_jobs")
@@ -191,17 +190,22 @@ def main():
                 if len(vars_rm) > 1:
                     model.Add(sum(vars_rm) <= 1)
 
-        # Constraint 3: Jam Berhalangan Guru & Maks JP per Hari
+        # Constraint 3: Kebijakan Fleksibel Beban Mengajar Guru (Jam Berhalangan, Maks Harian, Maks Beruntun, Anti Full Day)
         teacher_map = {t["id"]: t for t in teachers}
+
         for t_id, t_data in teacher_map.items():
             max_per_day = int(t_data.get("max_periods_per_day") or 8)
+            max_consecutive = int(t_data.get("max_consecutive_periods") or 4)
+            disallow_full_day = bool(t_data.get("disallow_full_day", True))
             unavail = t_data.get("unavailable_slots") or []
+
             if isinstance(unavail, str):
                 try:
                     unavail = json.loads(unavail)
                 except Exception:
                     unavail = []
 
+            # 3A. Jam Berhalangan Mengajar Guru
             for rule in unavail:
                 r_day = int(rule.get("day_index", 0))
                 r_periods = rule.get("periods", "ALL")
@@ -212,15 +216,39 @@ def main():
                                 if meetings[m_idx]["teacher_id"] == t_id:
                                     model.Add(var == 0)
 
+            # 3B. Evaluasi Harian per Guru
             for d in days_sorted:
-                t_vars_day = []
-                for s in teaching_slots:
-                    if s["day_index"] == d:
-                        for m_idx, var in slot_coverage[s["id"]]:
-                            if meetings[m_idx]["teacher_id"] == t_id:
-                                t_vars_day.append(var)
-                if t_vars_day:
-                    model.Add(sum(t_vars_day) <= max_per_day)
+                day_slots = [s for s in teaching_slots if s["day_index"] == d]
+                day_slots.sort(key=lambda s: s["period_number"])
+
+                day_teaching_vars = []
+                for s in day_slots:
+                    t_active_in_slot = [
+                        var for m_idx, var in slot_coverage[s["id"]]
+                        if meetings[m_idx]["teacher_id"] == t_id
+                    ]
+                    if t_active_in_slot:
+                        day_teaching_vars.append(sum(t_active_in_slot))
+                    else:
+                        day_teaching_vars.append(0)
+
+                total_slots_in_day = len(day_teaching_vars)
+                if total_slots_in_day == 0:
+                    continue
+
+                # 3C. Batas Maksimal Jam Mengajar dalam 1 Hari
+                model.Add(sum(day_teaching_vars) <= max_per_day)
+
+                # 3D. Larangan Full Mengajar dari Periode Pertama sampai Akhir (Wajib minimal 1 periode kosong)
+                if disallow_full_day and total_slots_in_day >= 4:
+                    model.Add(sum(day_teaching_vars) <= total_slots_in_day - 1)
+
+                # 3E. Batas Maksimal Jam Mengajar Berturut-Turut (Sliding Window)
+                window_size = max_consecutive + 1
+                if total_slots_in_day >= window_size:
+                    for w_start in range(total_slots_in_day - window_size + 1):
+                        window = day_teaching_vars[w_start : w_start + window_size]
+                        model.Add(sum(window) <= max_consecutive)
 
         update_job(JOB_ID, "processing", "Menjalankan optimasi CP-SAT Google OR-Tools...")
         solver = cp_model.CpSolver()
@@ -230,7 +258,7 @@ def main():
 
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise RuntimeError(
-                "Tidak ditemukan kombinasi jadwal tanpa bentrok. Periksa kembali kapasitas slot waktu atau syarat jam berhalangan guru."
+                "Tidak ditemukan kombinasi jadwal tanpa bentrok yang memenuhi seluruh batasan jam berturut-turut dan syarat guru. Coba longgarkan batas jam berturut-turut atau tambah kapasitas slot waktu."
             )
 
         schedule_rows = []
