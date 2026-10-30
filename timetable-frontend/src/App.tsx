@@ -30,6 +30,8 @@ import {
   Wifi,
   WifiOff,
   CloudUpload,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Session } from '@supabase/supabase-js';
@@ -61,7 +63,6 @@ import {
   ScheduleItem,
 } from './types';
 
-// Daftar email pemilik database yang berhak mengelola token
 const ADMIN_EMAILS = ['joedie.meyson@gmail.com'];
 
 export const App: React.FC = () => {
@@ -93,10 +94,11 @@ export const App: React.FC = () => {
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
 
-  // State Filter & Navigasi Matriks
+  // State Filter, Navigasi Matriks & Toggle Cetak Grafik Bar
   const [filterMode, setFilterMode] = useState<'CLASS' | 'TEACHER'>('CLASS');
   const [selectedId, setSelectedId] = useState<string>('');
   const [printMode, setPrintMode] = useState<'SINGLE' | 'ALL_CLASSES' | 'ALL_TEACHERS'>('SINGLE');
+  const [showChartInPrint, setShowChartInPrint] = useState<boolean>(true); // Toggle cetak bar chart
 
   // State Modals
   const [isMasterModalOpen, setIsMasterModalOpen] = useState<boolean>(false);
@@ -144,7 +146,6 @@ export const App: React.FC = () => {
     message: 'GitHub Actions Solver: Siap',
   });
 
-  // Validasi Hak Akses Admin
   const isAdmin = useMemo(() => {
     if (!session?.user?.email) return false;
     return ADMIN_EMAILS.map((email) => email.toLowerCase()).includes(
@@ -172,7 +173,6 @@ export const App: React.FC = () => {
     }
   }, [session?.user?.id]);
 
-  // Eksekusi antrean sinkronisasi
   const triggerAutoSync = useCallback(async () => {
     const schoolId = session?.user?.id;
     if (!schoolId || !navigator.onLine || isSyncing) return;
@@ -203,7 +203,6 @@ export const App: React.FC = () => {
     }
   }, [session?.user?.id, isSyncing, refreshQueueCount, checkConflictCount]);
 
-  // Listener PWA & Perubahan Status Jaringan
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
@@ -255,7 +254,6 @@ export const App: React.FC = () => {
     setDeferredPrompt(null);
   };
 
-  // Simpan JWT Session dan Konfigurasi Supabase ke IndexedDB untuk dibaca sw.js
   useEffect(() => {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -478,7 +476,6 @@ export const App: React.FC = () => {
     return Array.from(map.entries()).map(([key, data]) => ({ key, ...data }));
   }, [lessons]);
 
-  // Validasi Kelengkapan Data (Termasuk Pemeriksaan Jam Minimal Guru & Keseimbangan Jenjang Kelas)
   const validationStatus = useMemo(() => {
     const issues: string[] = [];
 
@@ -498,7 +495,6 @@ export const App: React.FC = () => {
         issues.push(`Guru belum memiliki penugasan jam: ${names}${extra}`);
       }
 
-      // Periksa kecukupan jam minimal guru
       const underloadedTeachers = teachers.filter((t) => {
         const totalJP = lessons
           .filter((l) => l.teacher_id === t.id)
@@ -523,7 +519,6 @@ export const App: React.FC = () => {
         issues.push(`Kelas belum memiliki kartu pelajaran: ${names}${extra}`);
       }
 
-      // Periksa keseimbangan akumulasi jam per jenjang
       const gradeGroups = new Map<number | string, number[]>();
       classes.forEach((cls) => {
         const g = cls.grade_level || 'Lainnya';
@@ -598,7 +593,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Simpan Kartu Beban Mengajar (Dengan OCC Versioning)
   const handleSaveCardConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     const schoolId = session?.user?.id;
@@ -882,7 +876,6 @@ export const App: React.FC = () => {
     if (isOnline) triggerAutoSync();
   };
 
-  // Pemicu Solver: Tombol Selalu Aktif dengan Konfirmasi & Peringatan Jika Data Belum Lengkap
   const handleTriggerSolver = async () => {
     if (!isOnline) {
       alert('Penyusunan jadwal otomatis Google OR-Tools membutuhkan koneksi internet aktif.');
@@ -999,7 +992,6 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col text-slate-800">
-      {/* ATURAN CSS PRINT 1 LEMBAR A4 LANSKAP */}
       <style>{`
         @media print {
           @page {
@@ -1250,35 +1242,27 @@ export const App: React.FC = () => {
               <span>Syarat Jam Guru</span>
             </button>
 
-            {/* TOMBOL BARU: KEBIJAKAN BEBAN GURU FLEKSIBEL */}
             <button
               onClick={() => setIsTeacherPolicyOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 text-xs font-semibold transition shadow-sm"
-              title="Atur maksimal jam berturut-turut, larangan full day, dan maks harian"
+              title="Atur maksimal jam berturut-turut, larangan full day, dan idle gap individu"
             >
               <ShieldCheck className="w-4 h-4 text-indigo-600" />
               <span>Kebijakan Guru</span>
             </button>
 
-            {/* TOMBOL BARU: AUDIT JAM GURU & KESEIMBANGAN JENJANG KELAS */}
             <button
               onClick={() => setIsWorkloadAuditOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-teal-300 bg-teal-50 hover:bg-teal-100 text-teal-900 text-xs font-semibold transition shadow-sm"
-              title="Cek pemenuhan jam minimal guru dan keseimbangan akumulatif jam per jenjang kelas"
+              title="Cek pemenuhan jam minimal guru dan kesetaraan jam per jenjang kelas"
             >
               <Scale className="w-4 h-4 text-teal-700" />
               <span>Audit Jam & Jenjang</span>
             </button>
 
-            {/* TOMBOL GENERATE JADWAL OTOMATIS (SELALU AKTIF) */}
             <button
               onClick={handleTriggerSolver}
               disabled={isGenerating}
-              title={
-                !validationStatus.isValid
-                  ? 'Ada catatan kelengkapan/keseimbangan data. Klik untuk melihat detail & konfirmasi.'
-                  : 'Klik untuk membuat jadwal otomatis'
-              }
               className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isGenerating
                   ? 'bg-slate-400 text-white cursor-not-allowed'
@@ -1325,61 +1309,9 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2">
               <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
-                <strong>Mode Offline Aktif:</strong> Anda tetap dapat mengatur kartu mapel, hari & jam kerja, mengecek Audit Jam & Jenjang, serta mencetak jadwal. Perubahan disimpan ke antrean lokal ({pendingQueueCount} data) dan otomatis disinkronkan saat kembali online.
+                <strong>Mode Offline Aktif:</strong> Anda tetap dapat mengatur kebijakan guru, memeriksa Audit Jam & Jenjang, dan mencetak jadwal. Perubahan tersimpan di antrean lokal ({pendingQueueCount} data).
               </span>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* BANNER STATUS KESIAPAN DATA (INFORMASIONAL) */}
-      {isOnline && !validationStatus.isValid && (
-        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
-          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5 shadow-sm">
-            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <span className="font-bold">Catatan Kelengkapan & Keseimbangan Jadwal:</span>
-              <ul className="list-disc list-inside mt-1 space-y-0.5 text-amber-800 text-[11px]">
-                {validationStatus.issues.map((issue, idx) => (
-                  <li key={idx}>{issue}</li>
-                ))}
-              </ul>
-              <p className="mt-1.5 text-[11px] text-amber-700 italic">
-                * Buka menu <strong>"Audit Jam & Jenjang"</strong> untuk melihat rincian per guru/kelas, atau tetap klik <strong>"Generate Jadwal Otomatis"</strong> untuk melanjutkan.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* BANNER STATUS SOLVER */}
-      {isOnline && jobStatus.status !== 'idle' && (
-        <div className="max-w-7xl mx-auto w-full px-6 pt-3 print:hidden">
-          <div
-            className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs transition ${
-              jobStatus.status === 'processing' || jobStatus.status === 'queued'
-                ? 'bg-blue-50 border-blue-200 text-blue-900'
-                : jobStatus.status === 'completed'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : 'bg-rose-50 border-rose-200 text-rose-900'
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              {jobStatus.status === 'processing' || jobStatus.status === 'queued' ? (
-                <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
-              ) : jobStatus.status === 'completed' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-              )}
-              <span className="font-medium">{jobStatus.message}</span>
-              {jobStatus.elapsedMs && (
-                <span className="text-[11px] font-mono opacity-75">({jobStatus.elapsedMs} ms)</span>
-              )}
-            </div>
-            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-white/70 border border-current">
-              {jobStatus.status}
-            </span>
           </div>
         </div>
       )}
@@ -1434,6 +1366,22 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Tombol Toggle Cetak Grafik Bar (Hanya Relevan Saat Filter Mode Teacher) */}
+            {filterMode === 'TEACHER' && (
+              <button
+                onClick={() => setShowChartInPrint(!showChartInPrint)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition ${
+                  showChartInPrint
+                    ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                    : 'border-slate-300 bg-slate-50 text-slate-600'
+                }`}
+                title="Sembunyikan atau sertakan grafik batang di dokumen cetak PDF"
+              >
+                {showChartInPrint ? <Eye className="w-3.5 h-3.5 text-indigo-600" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+                <span>{showChartInPrint ? 'Grafik di PDF: ON' : 'Grafik di PDF: OFF'}</span>
+              </button>
+            )}
+
             <button
               onClick={handleExportExcel}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold transition"
@@ -1484,6 +1432,7 @@ export const App: React.FC = () => {
                 schedules={schedules}
                 filterMode={filterMode}
                 selectedId={selectedId}
+                showChartInPrint={showChartInPrint}
                 onScheduleUpdated={fetchAllData}
               />
             </div>
@@ -1511,6 +1460,7 @@ export const App: React.FC = () => {
                     schedules={schedules}
                     filterMode="CLASS"
                     selectedId={cls.id}
+                    showChartInPrint={showChartInPrint}
                   />
                 </div>
               ))}
@@ -1539,6 +1489,7 @@ export const App: React.FC = () => {
                     schedules={schedules}
                     filterMode="TEACHER"
                     selectedId={tch.id}
+                    showChartInPrint={showChartInPrint}
                   />
                 </div>
               ))}
