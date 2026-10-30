@@ -1,256 +1,337 @@
-import React, { useState } from 'react';
-import { X, ShieldCheck, Check, Users, User } from 'lucide-react';
-import { supabase } from '../lib/supabaseClient';
-import { Teacher } from '../types';
+import React, { useMemo } from 'react';
+import {
+  WorkDay,
+  TimeSlot,
+  Teacher,
+  ClassRoom,
+  Room,
+  Subject,
+  Lesson,
+  ScheduleItem,
+} from '../types';
+import { BarChart3, Clock, CheckCircle2 } from 'lucide-react';
 
-interface Props {
-  isOpen: boolean;
-  onClose: () => void;
+interface TimetableGridProps {
+  workDays: WorkDay[];
+  timeSlots: TimeSlot[];
   teachers: Teacher[];
-  schoolId: string;
-  onDataUpdated: () => void;
+  classes: ClassRoom[];
+  rooms: Room[];
+  subjects: Subject[];
+  lessons: Lesson[];
+  schedules: ScheduleItem[];
+  filterMode: 'CLASS' | 'TEACHER';
+  selectedId: string;
+  showChartInPrint?: boolean; // Properti toggle cetak grafik bar
+  onScheduleUpdated?: () => void;
 }
 
-export const TeacherPolicyModal: React.FC<Props> = ({
-  isOpen,
-  onClose,
+export const TimetableGrid: React.FC<TimetableGridProps> = ({
+  workDays,
+  timeSlots,
   teachers,
-  schoolId,
-  onDataUpdated,
+  classes,
+  rooms,
+  subjects,
+  lessons,
+  schedules,
+  filterMode,
+  selectedId,
+  showChartInPrint = true,
 }) => {
-  const [targetScope, setTargetScope] = useState<'ALL' | 'SPECIFIC'>('ALL');
-  const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
-    teachers[0]?.id || ''
+  const activeDays = useMemo(
+    () => workDays.filter((d) => d.is_active).sort((a, b) => a.day_index - b.day_index),
+    [workDays]
   );
 
-  const [maxConsecutive, setMaxConsecutive] = useState<number>(4);
-  const [maxPerDay, setMaxPerDay] = useState<number>(8);
-  const [maxIdleGap, setMaxIdleGap] = useState<number>(1);
-  const [minWeekly, setMinWeekly] = useState<number>(24);
-  const [disallowFullDay, setDisallowFullDay] = useState<boolean>(true);
-  const [saving, setSaving] = useState<boolean>(false);
+  const periods = useMemo(() => {
+    const periodSet = new Set<number>();
+    timeSlots.forEach((slot) => periodSet.add(slot.period_number));
+    return Array.from(periodSet).sort((a, b) => a - b);
+  }, [timeSlots]);
 
-  if (!isOpen) return null;
+  const subjectMap = useMemo(() => new Map(subjects.map((s) => [s.id, s])), [subjects]);
+  const teacherMap = useMemo(() => new Map(teachers.map((t) => [t.id, t])), [teachers]);
+  const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes]);
+  const roomMap = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
+  const lessonMap = useMemo(() => new Map(lessons.map((l) => [l.id, l])), [lessons]);
 
-  const handleApply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    try {
-      const payload = {
-        max_consecutive_periods: Number(maxConsecutive),
-        max_periods_per_day: Number(maxPerDay),
-        max_idle_gap_per_day: Number(maxIdleGap),
-        min_periods_per_week: Number(minWeekly),
-        disallow_full_day: Boolean(disallowFullDay),
-        updated_at: new Date().toISOString(),
-      };
+  // Statistik Beban Harian Guru
+  const teacherDailyStats = useMemo(() => {
+    if (filterMode !== 'TEACHER' || !selectedId) return null;
 
-      if (targetScope === 'ALL') {
-        const { error } = await supabase
-          .from('teachers')
-          .update(payload)
-          .eq('school_id', schoolId);
-        if (error) throw error;
-        alert(`Berhasil menerapkan kebijakan untuk SELURUH guru (${teachers.length} guru)!`);
-      } else {
-        const { error } = await supabase
-          .from('teachers')
-          .update(payload)
-          .eq('id', selectedTeacherId);
-        if (error) throw error;
-        alert('Berhasil memperbarui kebijakan guru terpilih!');
+    const teacher = teacherMap.get(selectedId);
+    let totalWeekJP = 0;
+
+    const dayBreakdown = activeDays.map((day) => {
+      const daySlots = timeSlots
+        .filter((s) => s.day_index === day.day_index && s.slot_type !== 'BREAK')
+        .sort((a, b) => a.period_number - b.period_number);
+
+      const activePeriods: number[] = [];
+
+      daySlots.forEach((slot) => {
+        const item = schedules.find(
+          (sc) => sc.time_slot_id === slot.id && sc.teacher_id === selectedId
+        );
+        if (item) {
+          activePeriods.push(slot.period_number);
+        }
+      });
+
+      const countJP = activePeriods.length;
+      totalWeekJP += countJP;
+
+      let gapCount = 0;
+      if (countJP >= 2) {
+        const minP = Math.min(...activePeriods);
+        const maxP = Math.max(...activePeriods);
+        gapCount = maxP - minP + 1 - countJP;
       }
 
-      onDataUpdated();
-      onClose();
-    } catch (err: any) {
-      alert(`Gagal menyimpan kebijakan guru: ${err.message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
+      return {
+        dayName: day.day_name,
+        dayIndex: day.day_index,
+        jpCount: countJP,
+        gapCount,
+        activePeriods,
+      };
+    });
 
-  const handleTeacherSelect = (teacherId: string) => {
-    setSelectedTeacherId(teacherId);
-    const tch = teachers.find((t) => t.id === teacherId);
-    if (tch) {
-      setMaxConsecutive(tch.max_consecutive_periods ?? 4);
-      setMaxPerDay(tch.max_periods_per_day ?? 8);
-      setMaxIdleGap(tch.max_idle_gap_per_day ?? 1);
-      setMinWeekly(tch.min_periods_per_week ?? 24);
-      setDisallowFullDay(tch.disallow_full_day ?? true);
-    }
-  };
+    const maxDayJP = Math.max(...dayBreakdown.map((d) => d.jpCount), 1);
+    const avgDaily = (totalWeekJP / (activeDays.length || 1)).toFixed(1);
+
+    return {
+      teacher,
+      totalWeekJP,
+      avgDaily,
+      maxDayJP,
+      dayBreakdown,
+    };
+  }, [filterMode, selectedId, activeDays, timeSlots, schedules, teacherMap]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 text-xs">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="p-4 bg-indigo-900 text-white flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-indigo-300" />
-            <div>
-              <h2 className="text-sm font-bold">Kebijakan Beban Mengajar Guru</h2>
-              <p className="text-[11px] text-indigo-200">
-                Atur batasan jam berturut-turut, batas jam kosong harian, dan jam minimal
-              </p>
+    <div className="space-y-3">
+      {/* =========================================================================
+          GRAFIK BATANG BEBAN HARIAN GURU
+          (Memiliki toggle showChartInPrint agar dapat disembunyikan saat cetak)
+          ========================================================================= */}
+      {filterMode === 'TEACHER' && teacherDailyStats && (
+        <div
+          className={`bg-white p-3 rounded-xl border border-slate-200 shadow-sm ${
+            showChartInPrint
+              ? 'print:border print:border-slate-300 print:p-2 print:mb-2 print:shadow-none print:break-inside-avoid'
+              : 'print:hidden'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 print:border-slate-200 pb-2 mb-2">
+            <div className="flex items-center gap-1.5">
+              <div className="p-1 rounded bg-indigo-50 text-indigo-600 print:hidden">
+                <BarChart3 className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800 text-xs print:text-[8pt] print:font-extrabold">
+                  Distribusi Beban Mengajar Harian: {teacherDailyStats.teacher?.full_name} ({teacherDailyStats.teacher?.teacher_code})
+                </h3>
+              </div>
             </div>
-          </div>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-indigo-800 text-indigo-200 hover:text-white">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
 
-        {/* Form Body */}
-        <form onSubmit={handleApply} className="p-6 space-y-4">
-          <div>
-            <label className="block font-bold text-slate-700 mb-1.5">Terapkan Kebijakan Untuk:</label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setTargetScope('ALL')}
-                className={`py-2 px-3 rounded-xl border flex items-center justify-center gap-1.5 font-bold transition ${
-                  targetScope === 'ALL'
-                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                <Users className="w-4 h-4" />
-                <span>Seluruh Guru ({teachers.length})</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTargetScope('SPECIFIC')}
-                className={`py-2 px-3 rounded-xl border flex items-center justify-center gap-1.5 font-bold transition ${
-                  targetScope === 'SPECIFIC'
-                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                <User className="w-4 h-4" />
-                <span>Guru Tertentu</span>
-              </button>
+            <div className="flex items-center gap-2 text-xs print:text-[7.5pt]">
+              <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 font-bold text-indigo-900 print:border-slate-300">
+                Total: {teacherDailyStats.totalWeekJP} JP / Pekan
+              </span>
+              <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 font-bold text-slate-700 print:border-slate-300">
+                Rata-rata: {teacherDailyStats.avgDaily} JP / Hari
+              </span>
+              <span className="px-2 py-0.5 rounded bg-amber-50 border border-amber-200 font-bold text-amber-900 print:border-slate-300">
+                Batas Sela: Maks {teacherDailyStats.teacher?.max_idle_gap_per_day ?? 1} JP
+              </span>
             </div>
           </div>
 
-          {targetScope === 'SPECIFIC' && (
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">Pilih Guru:</label>
-              <select
-                value={selectedTeacherId}
-                onChange={(e) => handleTeacherSelect(e.target.value)}
-                className="w-full p-2 border rounded-xl bg-white text-slate-800 font-semibold"
-              >
-                {teachers.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.full_name} ({t.teacher_code})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* Bar Chart Visual Compact */}
+          <div className="grid grid-cols-5 md:grid-cols-6 gap-2 pt-0.5">
+            {teacherDailyStats.dayBreakdown.map((item) => {
+              const heightPercent = Math.round((item.jpCount / 8) * 100);
+              const isHeavy = item.jpCount >= 6;
+              const hasGap = item.gapCount > 0;
 
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3.5">
-            <div className="grid grid-cols-3 gap-2.5">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Maks. Jam Beruntun
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={maxConsecutive}
-                  onChange={(e) => setMaxConsecutive(Number(e.target.value))}
-                  className="w-full p-2 border rounded-lg bg-white font-bold text-indigo-900"
-                />
-                <p className="text-[10px] text-slate-500 mt-0.5">Maks. berturut-turut</p>
-              </div>
+              return (
+                <div
+                  key={item.dayIndex}
+                  className="flex flex-col items-center justify-end p-1.5 rounded-lg bg-slate-50 border border-slate-200 print:border-slate-300 print:p-1 print:bg-white"
+                >
+                  {/* Status Jam Sela */}
+                  <div className="h-4 flex items-center justify-center mb-0.5">
+                    {hasGap ? (
+                      <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-amber-100 text-amber-900 border border-amber-300 print:text-[6.5pt]">
+                        Sela {item.gapCount}j
+                      </span>
+                    ) : item.jpCount > 0 ? (
+                      <span className="text-[8.5px] font-bold text-emerald-700 print:text-[6.5pt]">
+                        Rapat
+                      </span>
+                    ) : null}
+                  </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Maks. Jam / Hari
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={14}
-                  value={maxPerDay}
-                  onChange={(e) => setMaxPerDay(Number(e.target.value))}
-                  className="w-full p-2 border rounded-lg bg-white font-bold text-indigo-900"
-                />
-                <p className="text-[10px] text-slate-500 mt-0.5">Maks. total harian</p>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Maks. Jam Kosong
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={4}
-                  value={maxIdleGap}
-                  onChange={(e) => setMaxIdleGap(Number(e.target.value))}
-                  className="w-full p-2 border rounded-lg bg-white font-bold text-rose-700"
-                />
-                <p className="text-[10px] text-slate-500 mt-0.5">Sela kosong harian</p>
-              </div>
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Target Jam Mengajar Minimal per Pekan
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={50}
-                value={minWeekly}
-                onChange={(e) => setMinWeekly(Number(e.target.value))}
-                className="w-full p-2 border rounded-lg bg-white font-bold text-emerald-800"
-              />
-              <p className="text-[10px] text-slate-500 mt-0.5">Standar sertifikasi: 24 JP / pekan</p>
-            </div>
-
-            <div className="pt-2 border-t border-slate-200">
-              <label className="flex items-start gap-2.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={disallowFullDay}
-                  onChange={(e) => setDisallowFullDay(e.target.checked)}
-                  className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <div>
-                  <span className="font-bold text-slate-800 block">
-                    Dilarang Mengajar Penuh (*Full Day*) Tanpa Jeda
+                  {/* Angka JP */}
+                  <span className="font-mono font-bold text-slate-800 text-xs print:text-[7pt] mb-0.5">
+                    {item.jpCount} JP
                   </span>
-                  <span className="text-[11px] text-slate-500 leading-relaxed block">
-                    Guru tidak diperbolehkan mengajar dari jam pertama hingga jam terakhir dalam satu hari.
+
+                  {/* Batang Bar */}
+                  <div className="w-full bg-slate-200 print:bg-slate-100 rounded h-10 print:h-8 flex items-end p-0.5 overflow-hidden border border-slate-300">
+                    <div
+                      style={{ height: `${Math.max(Math.min(heightPercent, 100), item.jpCount > 0 ? 15 : 0)}%` }}
+                      className={`w-full rounded transition-all ${
+                        item.jpCount === 0
+                          ? 'bg-transparent'
+                          : isHeavy
+                          ? 'bg-amber-500 print:bg-slate-600'
+                          : 'bg-indigo-600 print:bg-slate-800'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Label Hari */}
+                  <span className="mt-1 font-bold text-slate-700 text-[10px] print:text-[7pt]">
+                    {item.dayName}
                   </span>
                 </div>
-              </label>
-            </div>
+              );
+            })}
           </div>
+        </div>
+      )}
 
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 font-semibold text-slate-700"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition flex items-center gap-1.5"
-            >
-              <Check className="w-4 h-4" />
-              <span>{saving ? 'Menyimpan...' : 'Terapkan Kebijakan'}</span>
-            </button>
-          </div>
-        </form>
+      {/* =========================================================================
+          MATRIKS GRID JADWAL UTAMA
+          ========================================================================= */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden overflow-x-auto print:border-none print:shadow-none">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="bg-slate-900 text-white">
+              <th className="p-2 text-center font-bold border-r border-slate-800 w-20 print:w-16 print:p-1 print:text-[7.5pt]">
+                Periode
+              </th>
+              {activeDays.map((day) => (
+                <th
+                  key={day.id}
+                  className="p-2 text-center font-bold border-r border-slate-800 last:border-r-0 min-w-[130px] print:min-w-0 print:p-1 print:text-[7.5pt]"
+                >
+                  {day.day_name}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {periods.map((periodNum) => (
+              <tr key={periodNum} className="hover:bg-slate-50/50">
+                <td className="p-1.5 text-center bg-slate-50 font-bold text-slate-700 border-r border-slate-200 print:p-1">
+                  <div className="font-mono text-xs print:text-[7pt]">Jam {periodNum}</div>
+                  {(() => {
+                    const sampleSlot = timeSlots.find((s) => s.period_number === periodNum);
+                    if (sampleSlot && sampleSlot.start_time && sampleSlot.end_time) {
+                      return (
+                        <div className="text-[9.5px] text-slate-400 font-normal print:text-[6pt]">
+                          {sampleSlot.start_time.slice(0, 5)}-{sampleSlot.end_time.slice(0, 5)}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </td>
+
+                {activeDays.map((day) => {
+                  const slot = timeSlots.find(
+                    (s) => s.day_index === day.day_index && s.period_number === periodNum
+                  );
+
+                  if (!slot) {
+                    return (
+                      <td
+                        key={day.id}
+                        className="p-1.5 text-center text-slate-300 bg-slate-50/30 border-r border-slate-200 last:border-r-0 print:p-1"
+                      >
+                        -
+                      </td>
+                    );
+                  }
+
+                  if (slot.slot_type === 'BREAK') {
+                    return (
+                      <td
+                        key={day.id}
+                        className="p-1.5 text-center bg-amber-50/70 border-r border-slate-200 last:border-r-0 text-amber-800 font-bold text-[10px] print:text-[6.5pt] print:bg-slate-100"
+                      >
+                        {slot.slot_name || 'ISTIRAHAT'}
+                      </td>
+                    );
+                  }
+
+                  let matchedSchedule: ScheduleItem | undefined;
+                  if (filterMode === 'CLASS') {
+                    matchedSchedule = schedules.find(
+                      (sc) => sc.time_slot_id === slot.id && sc.class_id === selectedId
+                    );
+                  } else {
+                    matchedSchedule = schedules.find(
+                      (sc) => sc.time_slot_id === slot.id && sc.teacher_id === selectedId
+                    );
+                  }
+
+                  if (!matchedSchedule) {
+                    return (
+                      <td
+                        key={day.id}
+                        className="p-1.5 text-center text-slate-300 border-r border-slate-200 last:border-r-0 print:p-1"
+                      >
+                        <span className="text-[9.5px] opacity-40 print:text-[6pt]">-</span>
+                      </td>
+                    );
+                  }
+
+                  const lesson = lessonMap.get(matchedSchedule.lesson_id);
+                  const subject = lesson ? subjectMap.get(lesson.subject_id) : undefined;
+                  const teacher = teacherMap.get(matchedSchedule.teacher_id);
+                  const classItem = classMap.get(matchedSchedule.class_id);
+                  const roomItem = matchedSchedule.room_id
+                    ? roomMap.get(matchedSchedule.room_id)
+                    : undefined;
+
+                  return (
+                    <td
+                      key={day.id}
+                      className="p-1.5 border-r border-slate-200 last:border-r-0 align-top bg-white print:p-1"
+                    >
+                      <div className="p-1 rounded bg-indigo-50/80 border border-indigo-200 space-y-0.5 print:bg-white print:border-slate-300 print:p-0.5">
+                        <div className="font-bold text-indigo-900 leading-tight print:text-[7pt] print:text-black">
+                          {subject?.subject_name || 'Mata Pelajaran'}
+                        </div>
+
+                        <div className="flex items-center justify-between text-[9.5px] text-slate-600 font-semibold print:text-[6.5pt]">
+                          {filterMode === 'CLASS' ? (
+                            <span>{teacher?.full_name || 'Guru'}</span>
+                          ) : (
+                            <span className="text-indigo-800 print:text-black font-bold">
+                              Kelas {classItem?.class_name || 'Rombel'}
+                            </span>
+                          )}
+
+                          {roomItem && (
+                            <span className="px-1 bg-amber-100 text-amber-800 rounded text-[8.5px] font-bold print:border print:border-slate-300 print:text-[6pt]">
+                              {roomItem.room_name}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
