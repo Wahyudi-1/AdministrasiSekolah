@@ -11,9 +11,14 @@ import {
   Check,
   Building2,
   RotateCcw,
+  GraduationCap,
+  Layers,
+  Sparkles,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
-import { Teacher, Subject, ClassRoom, Room } from '../types';
+import { Teacher, Subject, ClassRoom, Room, CurriculumStructure } from '../types';
 
 interface Props {
   isOpen: boolean;
@@ -22,11 +27,12 @@ interface Props {
   subjects: Subject[];
   classes: ClassRoom[];
   rooms?: Room[];
+  curriculumStructures?: CurriculumStructure[];
   schoolId: string;
   onDataUpdated: () => void;
 }
 
-type TabType = 'TEACHER' | 'SUBJECT' | 'CLASS' | 'ROOM';
+type TabType = 'TEACHER' | 'SUBJECT' | 'CLASS' | 'ROOM' | 'CURRICULUM';
 
 export const MasterDataModal: React.FC<Props> = ({
   isOpen,
@@ -35,6 +41,7 @@ export const MasterDataModal: React.FC<Props> = ({
   subjects,
   classes,
   rooms = [],
+  curriculumStructures = [],
   schoolId,
   onDataUpdated,
 }) => {
@@ -42,11 +49,14 @@ export const MasterDataModal: React.FC<Props> = ({
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // State Form & Edit - Guru
+  // State Form & Edit - Guru (+ Pendidikan & Linieritas)
   const [editingTeacherId, setEditingTeacherId] = useState<string | null>(null);
   const [teacherCode, setTeacherCode] = useState('');
   const [fullName, setFullName] = useState('');
-  const [maxPeriods, setMaxPeriods] = useState<number>(6);
+  const [educationDegree, setEducationDegree] = useState('S1');
+  const [major, setMajor] = useState('');
+  const [eligibleSubjectIds, setEligibleSubjectIds] = useState<string[]>([]);
+  const [maxPeriods, setMaxPeriods] = useState<number>(8);
 
   // State Form & Edit - Mapel
   const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
@@ -63,13 +73,22 @@ export const MasterDataModal: React.FC<Props> = ({
   const [roomName, setRoomName] = useState('');
   const [roomType, setRoomType] = useState('LAB');
 
+  // State Form - Struktur Kurikulum per Jenjang
+  const [currGradeLevel, setCurrGradeLevel] = useState<number>(10);
+  const [currSubjectId, setCurrSubjectId] = useState<string>('');
+  const [currDefaultPeriods, setCurrDefaultPeriods] = useState<number>(4);
+  const [currIsCompulsory, setCurrIsCompulsory] = useState<boolean>(true);
+
   if (!isOpen) return null;
 
   const resetForms = () => {
     setEditingTeacherId(null);
     setTeacherCode('');
     setFullName('');
-    setMaxPeriods(6);
+    setEducationDegree('S1');
+    setMajor('');
+    setEligibleSubjectIds([]);
+    setMaxPeriods(8);
 
     setEditingSubjectId(null);
     setSubjectCode('');
@@ -86,11 +105,20 @@ export const MasterDataModal: React.FC<Props> = ({
     setErrorMsg('');
   };
 
-  // --- HANDLER GURU ---
+  // --- HANDLER GURU & LINIERITAS ---
+  const handleToggleEligibleSubject = (subjectId: string) => {
+    setEligibleSubjectIds((prev) =>
+      prev.includes(subjectId) ? prev.filter((id) => id !== subjectId) : [...prev, subjectId]
+    );
+  };
+
   const handleStartEditTeacher = (t: Teacher) => {
     setEditingTeacherId(t.id);
     setTeacherCode(t.teacher_code);
     setFullName(t.full_name);
+    setEducationDegree(t.education_degree || 'S1');
+    setMajor(t.major || '');
+    setEligibleSubjectIds(t.eligible_subject_ids || []);
     setMaxPeriods(t.max_periods_per_day);
     setErrorMsg('');
   };
@@ -102,29 +130,62 @@ export const MasterDataModal: React.FC<Props> = ({
     setLoading(true);
     setErrorMsg('');
     try {
+      let targetTeacherId = editingTeacherId;
+
       if (editingTeacherId) {
         const { error } = await supabase
           .from('teachers')
           .update({
             teacher_code: teacherCode.trim().toUpperCase(),
             full_name: fullName.trim(),
+            education_degree: educationDegree.trim(),
+            major: major.trim(),
             max_periods_per_day: Number(maxPeriods),
           })
           .eq('id', editingTeacherId)
           .eq('school_id', schoolId);
         if (error) throw error;
       } else {
-        const { error } = await supabase.from('teachers').insert([
-          {
-            school_id: schoolId,
-            teacher_code: teacherCode.trim().toUpperCase(),
-            full_name: fullName.trim(),
-            max_periods_per_day: Number(maxPeriods),
-            unavailable_slots: [],
-          },
-        ]);
+        const { data, error } = await supabase
+          .from('teachers')
+          .insert([
+            {
+              school_id: schoolId,
+              teacher_code: teacherCode.trim().toUpperCase(),
+              full_name: fullName.trim(),
+              education_degree: educationDegree.trim(),
+              major: major.trim(),
+              max_periods_per_day: Number(maxPeriods),
+              unavailable_slots: [],
+            },
+          ])
+          .select()
+          .single();
         if (error) throw error;
+        targetTeacherId = data.id;
       }
+
+      // Sinkronkan Tabel Linieritas Mapel (teacher_eligible_subjects)
+      if (targetTeacherId) {
+        await supabase
+          .from('teacher_eligible_subjects')
+          .delete()
+          .eq('school_id', schoolId)
+          .eq('teacher_id', targetTeacherId);
+
+        if (eligibleSubjectIds.length > 0) {
+          const eligiblePayload = eligibleSubjectIds.map((subId) => ({
+            school_id: schoolId,
+            teacher_id: targetTeacherId,
+            subject_id: subId,
+          }));
+          const { error: eligErr } = await supabase
+            .from('teacher_eligible_subjects')
+            .insert(eligiblePayload);
+          if (eligErr) throw eligErr;
+        }
+      }
+
       resetForms();
       onDataUpdated();
     } catch (err: any) {
@@ -266,13 +327,46 @@ export const MasterDataModal: React.FC<Props> = ({
     }
   };
 
+  // --- HANDLER STRUKTUR KURIKULUM ---
+  const handleSubmitCurriculum = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetSubId = currSubjectId || subjects[0]?.id;
+    if (!targetSubId) {
+      setErrorMsg('Pilih mata pelajaran terlebih dahulu.');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      const { error } = await supabase.from('curriculum_structures').upsert(
+        [
+          {
+            school_id: schoolId,
+            grade_level: Number(currGradeLevel),
+            subject_id: targetSubId,
+            default_periods: Number(currDefaultPeriods),
+            is_compulsory: Boolean(currIsCompulsory),
+          },
+        ],
+        { onConflict: 'school_id,grade_level,subject_id' }
+      );
+      if (error) throw error;
+      onDataUpdated();
+    } catch (err: any) {
+      setErrorMsg(`Gagal menyimpan struktur kurikulum: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // --- HANDLER HAPUS SATUAN ---
   const handleDelete = async (
-    table: 'teachers' | 'subjects' | 'classes' | 'rooms',
+    table: 'teachers' | 'subjects' | 'classes' | 'rooms' | 'curriculum_structures',
     id: string,
     name: string
   ) => {
-    if (!confirm(`Hapus "${name}"? Kartu jadwal terkait mungkin akan terpengaruh.`)) return;
+    if (!confirm(`Hapus "${name}"?`)) return;
 
     setLoading(true);
     setErrorMsg('');
@@ -292,9 +386,9 @@ export const MasterDataModal: React.FC<Props> = ({
     }
   };
 
-  // --- HANDLER RESET / KOSONGKAN SELURUH DATA KATEGORI ---
+  // --- HANDLER RESET KATEGORI ---
   const handleResetAllCategory = async (
-    table: 'teachers' | 'subjects' | 'classes' | 'rooms',
+    table: 'teachers' | 'subjects' | 'classes' | 'rooms' | 'curriculum_structures',
     labelCategory: string
   ) => {
     const confirmation = prompt(
@@ -323,13 +417,13 @@ export const MasterDataModal: React.FC<Props> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header Modal (Diberi shrink-0 agar tidak terkompres) */}
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh]">
+        {/* Header Modal */}
         <div className="p-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-base font-bold">Kelola Data Master Sekolah</h2>
+            <h2 className="text-base font-bold">Kelola Data Master & Struktur Kurikulum</h2>
             <p className="text-xs text-slate-400">
-              Tambah, edit, dan kelola Guru, Mata Pelajaran, Kelas, dan Ruangan Khusus
+              Atur Guru (beserta Ijazah & Linieritas Mapel), Mapel, Standar JP Kurikulum per Jenjang, Kelas, dan Ruangan
             </p>
           </div>
           <button
@@ -343,27 +437,27 @@ export const MasterDataModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Tab Navigasi (Diberi shrink-0 agar selalu tampil utuh & tidak terpotong) */}
-        <div className="flex border-b border-slate-200 bg-slate-50 px-4 pt-2 gap-2 text-xs font-semibold overflow-x-auto shrink-0">
+        {/* Tab Navigasi */}
+        <div className="flex border-b border-slate-200 bg-slate-50 px-4 pt-2 gap-1.5 text-xs font-semibold overflow-x-auto shrink-0">
           <button
             onClick={() => {
               setActiveTab('TEACHER');
               resetForms();
             }}
-            className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
+            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
               activeTab === 'TEACHER'
                 ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <Users className="w-4 h-4" /> Guru ({teachers.length})
+            <Users className="w-4 h-4" /> Guru & Linieritas ({teachers.length})
           </button>
           <button
             onClick={() => {
               setActiveTab('SUBJECT');
               resetForms();
             }}
-            className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
+            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
               activeTab === 'SUBJECT'
                 ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -373,10 +467,24 @@ export const MasterDataModal: React.FC<Props> = ({
           </button>
           <button
             onClick={() => {
+              setActiveTab('CURRICULUM');
+              if (!currSubjectId && subjects.length > 0) setCurrSubjectId(subjects[0].id);
+              resetForms();
+            }}
+            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
+              activeTab === 'CURRICULUM'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Layers className="w-4 h-4 text-emerald-600" /> Standar JP Jenjang ({curriculumStructures.length})
+          </button>
+          <button
+            onClick={() => {
               setActiveTab('CLASS');
               resetForms();
             }}
-            className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
+            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
               activeTab === 'CLASS'
                 ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -389,13 +497,13 @@ export const MasterDataModal: React.FC<Props> = ({
               setActiveTab('ROOM');
               resetForms();
             }}
-            className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition whitespace-nowrap ${
+            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
               activeTab === 'ROOM'
                 ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <Building2 className="w-4 h-4" /> Ruangan Khusus ({rooms.length})
+            <Building2 className="w-4 h-4" /> Ruangan ({rooms.length})
           </button>
         </div>
 
@@ -409,83 +517,143 @@ export const MasterDataModal: React.FC<Props> = ({
 
         {/* Konten Tab */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1 text-sm">
-          {/* TAB 1: GURU */}
+          {/* TAB 1: GURU + PENDIDIKAN & LINIERITAS */}
           {activeTab === 'TEACHER' && (
             <div className="space-y-4">
               <form
                 onSubmit={handleSubmitTeacher}
-                className={`grid grid-cols-1 md:grid-cols-4 gap-3 p-3.5 rounded-xl border transition ${
+                className={`p-4 rounded-xl border space-y-3.5 transition ${
                   editingTeacherId ? 'bg-amber-50/70 border-amber-300' : 'bg-slate-50 border-slate-200'
                 }`}
               >
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Kode Guru</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Contoh: G01"
-                    value={teacherCode}
-                    onChange={(e) => setTeacherCode(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs uppercase focus:ring-2 focus:ring-indigo-500 bg-white"
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Lengkap & Gelar</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Contoh: Drs. H. Ahmad Fauzi, M.Pd."
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white"
-                  />
-                </div>
-                <div className="flex items-end gap-2">
-                  <div className="w-20">
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Maks JP</label>
+                <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Kode Guru*</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="G01"
+                      value={teacherCode}
+                      onChange={(e) => setTeacherCode(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs uppercase bg-white font-bold"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Lengkap & Gelar*</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Contoh: Drs. Ahmad Fauzi, M.Pd."
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Jenjang Ijazah</label>
+                    <select
+                      value={educationDegree}
+                      onChange={(e) => setEducationDegree(e.target.value)}
+                      className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-white font-semibold"
+                    >
+                      <option value="S1">S1 / D4</option>
+                      <option value="S2">S2 (Magister)</option>
+                      <option value="S3">S3 (Doktor)</option>
+                      <option value="D3">D3</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Prodi / Jurusan Pendidikan</label>
+                    <input
+                      type="text"
+                      placeholder="Contoh: Pend. Fisika"
+                      value={major}
+                      onChange={(e) => setMajor(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Maks JP/Hari</label>
                     <input
                       type="number"
                       min={1}
                       max={14}
                       value={maxPeriods}
                       onChange={(e) => setMaxPeriods(Number(e.target.value))}
-                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white text-center font-bold"
+                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white text-center font-bold"
                     />
                   </div>
-                  <div className="flex-1 flex gap-1.5">
+                </div>
+
+                {/* Pemilih Linieritas Mata Pelajaran */}
+                <div className="pt-2 border-t border-slate-200">
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
+                    <GraduationCap className="w-4 h-4 text-indigo-600" />
+                    <span>Mata Pelajaran yang Diizinkan / Linier Sesuai Sertifikasi & Ijazah:</span>
+                  </label>
+                  {subjects.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1">
+                      {subjects.map((sub) => {
+                        const isSelected = eligibleSubjectIds.includes(sub.id);
+                        return (
+                          <button
+                            key={sub.id}
+                            type="button"
+                            onClick={() => handleToggleEligibleSubject(sub.id)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1 ${
+                              isSelected
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                            }`}
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-3 h-3" />
+                            ) : (
+                              <Square className="w-3 h-3 opacity-40" />
+                            )}
+                            <span>{sub.subject_name} ({sub.subject_code})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic">
+                      Tambahkan data Mata Pelajaran terlebih dahulu pada tab Mata Pelajaran.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  {editingTeacherId && (
                     <button
-                      type="submit"
-                      disabled={loading}
-                      className={`flex-1 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 shrink-0 h-[34px] text-white transition ${
-                        editingTeacherId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
-                      }`}
+                      type="button"
+                      onClick={resetForms}
+                      className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold"
                     >
-                      {editingTeacherId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                      <span>{editingTeacherId ? 'Simpan' : 'Tambah'}</span>
+                      Batal Edit
                     </button>
-                    {editingTeacherId && (
-                      <button
-                        type="button"
-                        onClick={resetForms}
-                        className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold h-[34px]"
-                      >
-                        Batal
-                      </button>
-                    )}
-                  </div>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 text-white transition shadow-sm ${
+                      editingTeacherId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                    }`}
+                  >
+                    {editingTeacherId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                    <span>{editingTeacherId ? 'Simpan Perubahan Guru' : 'Tambah Guru & Linieritas'}</span>
+                  </button>
                 </div>
               </form>
 
-              {/* Baris Tombol Reset & Judul Tabel */}
               <div className="flex items-center justify-between pt-1">
-                <span className="font-bold text-slate-700 text-xs">Daftar Guru Terdaftar ({teachers.length})</span>
+                <span className="font-bold text-slate-700 text-xs">Daftar Guru & Kualifikasi ({teachers.length})</span>
                 {teachers.length > 0 && (
                   <button
                     type="button"
                     onClick={() => handleResetAllCategory('teachers', 'Guru')}
                     disabled={loading}
                     className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
-                    title="Kosongkan seluruh data guru untuk sekolah ini"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
                     <span>Kosongkan Semua Guru</span>
@@ -493,51 +661,77 @@ export const MasterDataModal: React.FC<Props> = ({
                 )}
               </div>
 
-              {/* Tabel Guru (Header diberi sticky top-0 agar tidak hilang saat scroll) */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[340px] overflow-y-auto">
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[300px] overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
-                      <th className="p-2.5 w-20 text-center bg-slate-100">Kode</th>
-                      <th className="p-2.5 bg-slate-100">Nama Guru</th>
-                      <th className="p-2.5 w-28 text-center bg-slate-100">Batas JP/Hari</th>
-                      <th className="p-2.5 w-24 text-center bg-slate-100">Aksi</th>
+                      <th className="p-2.5 w-16 text-center bg-slate-100">Kode</th>
+                      <th className="p-2.5 bg-slate-100">Nama Guru & Pendidikan</th>
+                      <th className="p-2.5 bg-slate-100">Mapel Linier Diizinkan</th>
+                      <th className="p-2.5 w-24 text-center bg-slate-100">Maks/Hari</th>
+                      <th className="p-2.5 w-20 text-center bg-slate-100">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {teachers.map((t) => (
-                      <tr
-                        key={t.id}
-                        className={`transition ${
-                          editingTeacherId === t.id ? 'bg-amber-50' : 'hover:bg-slate-50/80'
-                        }`}
-                      >
-                        <td className="p-2.5 text-center font-mono font-bold text-slate-600">{t.teacher_code}</td>
-                        <td className="p-2.5 font-medium text-slate-800">{t.full_name}</td>
-                        <td className="p-2.5 text-center text-slate-600">{t.max_periods_per_day} JP</td>
-                        <td className="p-2.5 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              onClick={() => handleStartEditTeacher(t)}
-                              className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
-                              title="Edit Guru"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDelete('teachers', t.id, t.full_name)}
-                              className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
-                              title="Hapus Guru"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {teachers.map((t) => {
+                      const eligibleSubs = subjects.filter((s) =>
+                        (t.eligible_subject_ids || []).includes(s.id)
+                      );
+                      return (
+                        <tr
+                          key={t.id}
+                          className={`transition ${
+                            editingTeacherId === t.id ? 'bg-amber-50' : 'hover:bg-slate-50/80'
+                          }`}
+                        >
+                          <td className="p-2.5 text-center font-mono font-bold text-slate-600">{t.teacher_code}</td>
+                          <td className="p-2.5">
+                            <p className="font-bold text-slate-800">{t.full_name}</p>
+                            <span className="text-[10px] text-slate-500 font-medium">
+                              {t.education_degree || 'S1'} — {t.major || 'Belum diisi'}
+                            </span>
+                          </td>
+                          <td className="p-2.5">
+                            {eligibleSubs.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {eligibleSubs.map((sub) => (
+                                  <span
+                                    key={sub.id}
+                                    className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded text-[10px] font-bold"
+                                  >
+                                    {sub.subject_name}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">Semua / Otomatis Nama Jurusan</span>
+                            )}
+                          </td>
+                          <td className="p-2.5 text-center font-mono text-slate-600">{t.max_periods_per_day} JP</td>
+                          <td className="p-2.5 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => handleStartEditTeacher(t)}
+                                className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
+                                title="Edit Guru & Linieritas"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDelete('teachers', t.id, t.full_name)}
+                                className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
+                                title="Hapus Guru"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {teachers.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="p-4 text-center text-slate-400 italic">Belum ada data guru.</td>
+                        <td colSpan={5} className="p-4 text-center text-slate-400 italic">Belum ada data guru.</td>
                       </tr>
                     )}
                   </tbody>
@@ -560,10 +754,10 @@ export const MasterDataModal: React.FC<Props> = ({
                   <input
                     type="text"
                     required
-                    placeholder="Contoh: MAT"
+                    placeholder="Contoh: FIS"
                     value={subjectCode}
                     onChange={(e) => setSubjectCode(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs uppercase focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs uppercase bg-white font-bold"
                   />
                 </div>
                 <div>
@@ -571,10 +765,10 @@ export const MasterDataModal: React.FC<Props> = ({
                   <input
                     type="text"
                     required
-                    placeholder="Contoh: Matematika"
+                    placeholder="Contoh: Fisika"
                     value={subjectName}
                     onChange={(e) => setSubjectName(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
                   />
                 </div>
                 <div className="flex items-end gap-1.5">
@@ -600,7 +794,6 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              {/* Baris Tombol Reset Mapel */}
               <div className="flex items-center justify-between pt-1">
                 <span className="font-bold text-slate-700 text-xs">Daftar Mata Pelajaran ({subjects.length})</span>
                 {subjects.length > 0 && (
@@ -609,7 +802,6 @@ export const MasterDataModal: React.FC<Props> = ({
                     onClick={() => handleResetAllCategory('subjects', 'Mata Pelajaran')}
                     disabled={loading}
                     className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
-                    title="Kosongkan seluruh mata pelajaran untuk sekolah ini"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
                     <span>Kosongkan Semua Mapel</span>
@@ -641,14 +833,12 @@ export const MasterDataModal: React.FC<Props> = ({
                             <button
                               onClick={() => handleStartEditSubject(s)}
                               className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
-                              title="Edit Mapel"
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => handleDelete('subjects', s.id, s.subject_name)}
                               className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
-                              title="Hapus Mapel"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -667,7 +857,155 @@ export const MasterDataModal: React.FC<Props> = ({
             </div>
           )}
 
-          {/* TAB 3: KELAS */}
+          {/* TAB 3: STRUKTUR KURIKULUM (STANDAR JP PER JENJANG) */}
+          {activeTab === 'CURRICULUM' && (
+            <div className="space-y-4">
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  Atur standar jumlah JP per minggu untuk tiap mata pelajaran di masing-masing jenjang kelas. Pengaturan ini akan mengisi otomatis beban JP dan memberikan rekomendasi mapel pilihan saat penugasan guru.
+                </span>
+              </div>
+
+              <form
+                onSubmit={handleSubmitCurriculum}
+                className="grid grid-cols-1 md:grid-cols-5 gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200"
+              >
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Tingkat Jenjang</label>
+                  <select
+                    value={currGradeLevel}
+                    onChange={(e) => setCurrGradeLevel(Number(e.target.value))}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white font-bold"
+                  >
+                    <option value={7}>Kelas 7 (SMP)</option>
+                    <option value={8}>Kelas 8 (SMP)</option>
+                    <option value={9}>Kelas 9 (SMP)</option>
+                    <option value={10}>Kelas 10 (Fase E)</option>
+                    <option value={11}>Kelas 11 (Fase F)</option>
+                    <option value={12}>Kelas 12 (Fase F)</option>
+                  </select>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Mata Pelajaran</label>
+                  <select
+                    value={currSubjectId}
+                    onChange={(e) => setCurrSubjectId(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white font-medium"
+                  >
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.subject_name} ({s.subject_code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Standar JP & Sifat</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={1}
+                      max={14}
+                      value={currDefaultPeriods}
+                      onChange={(e) => setCurrDefaultPeriods(Number(e.target.value))}
+                      className="w-16 px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white text-center font-bold"
+                    />
+                    <select
+                      value={currIsCompulsory ? 'WAJIB' : 'PILIHAN'}
+                      onChange={(e) => setCurrIsCompulsory(e.target.value === 'WAJIB')}
+                      className="flex-1 px-2 py-1.5 border border-slate-300 rounded-lg text-[11px] bg-white font-semibold"
+                    >
+                      <option value="WAJIB">Wajib Semua Kelas</option>
+                      <option value="PILIHAN">Pilihan / Peminatan</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    type="submit"
+                    disabled={loading || subjects.length === 0}
+                    className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1 h-[34px] shadow-sm transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Simpan Standar</span>
+                  </button>
+                </div>
+              </form>
+
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[320px] overflow-y-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+                    <tr>
+                      <th className="p-2.5 w-28 text-center bg-slate-100">Jenjang</th>
+                      <th className="p-2.5 bg-slate-100">Mata Pelajaran</th>
+                      <th className="p-2.5 w-28 text-center bg-slate-100">Standar JP</th>
+                      <th className="p-2.5 w-36 text-center bg-slate-100">Kategori Mapel</th>
+                      <th className="p-2.5 w-20 text-center bg-slate-100">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {curriculumStructures
+                      .slice()
+                      .sort((a, b) => a.grade_level - b.grade_level)
+                      .map((cs) => {
+                        const sub = subjects.find((s) => s.id === cs.subject_id);
+                        return (
+                          <tr key={cs.id} className="hover:bg-slate-50/80">
+                            <td className="p-2.5 text-center font-bold text-indigo-900">
+                              Kelas {cs.grade_level}
+                            </td>
+                            <td className="p-2.5 font-semibold text-slate-800">
+                              {sub?.subject_name || 'Mapel Terhapus'} ({sub?.subject_code})
+                            </td>
+                            <td className="p-2.5 text-center font-mono font-bold text-slate-800">
+                              {cs.default_periods} JP
+                            </td>
+                            <td className="p-2.5 text-center">
+                              {cs.is_compulsory !== false ? (
+                                <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-bold">
+                                  Wajib Nasional
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-bold">
+                                  Mapel Pilihan / Peminatan
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <button
+                                onClick={() =>
+                                  handleDelete(
+                                    'curriculum_structures',
+                                    cs.id,
+                                    `${sub?.subject_name} Kelas ${cs.grade_level}`
+                                  )
+                                }
+                                className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    {curriculumStructures.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="p-4 text-center text-slate-400 italic">
+                          Belum ada standar kurikulum yang ditetapkan.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: KELAS */}
           {activeTab === 'CLASS' && (
             <div className="space-y-4">
               <form
@@ -684,7 +1022,7 @@ export const MasterDataModal: React.FC<Props> = ({
                     placeholder="Contoh: X-A / XII-MIPA-1"
                     value={className}
                     onChange={(e) => setClassName(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
                   />
                 </div>
                 <div>
@@ -692,7 +1030,7 @@ export const MasterDataModal: React.FC<Props> = ({
                   <select
                     value={gradeLevel}
                     onChange={(e) => setGradeLevel(Number(e.target.value))}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white font-medium"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white font-medium"
                   >
                     <option value={7}>Kelas 7 (SMP)</option>
                     <option value={8}>Kelas 8 (SMP)</option>
@@ -725,7 +1063,6 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              {/* Baris Tombol Reset Kelas */}
               <div className="flex items-center justify-between pt-1">
                 <span className="font-bold text-slate-700 text-xs">Daftar Kelas Rombel ({classes.length})</span>
                 {classes.length > 0 && (
@@ -734,7 +1071,6 @@ export const MasterDataModal: React.FC<Props> = ({
                     onClick={() => handleResetAllCategory('classes', 'Kelas')}
                     disabled={loading}
                     className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
-                    title="Kosongkan seluruh data kelas untuk sekolah ini"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
                     <span>Kosongkan Semua Kelas</span>
@@ -766,14 +1102,12 @@ export const MasterDataModal: React.FC<Props> = ({
                             <button
                               onClick={() => handleStartEditClass(c)}
                               className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
-                              title="Edit Kelas"
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => handleDelete('classes', c.id, c.class_name)}
                               className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
-                              title="Hapus Kelas"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -792,7 +1126,7 @@ export const MasterDataModal: React.FC<Props> = ({
             </div>
           )}
 
-          {/* TAB 4: RUANGAN KHUSUS */}
+          {/* TAB 5: RUANGAN KHUSUS */}
           {activeTab === 'ROOM' && (
             <div className="space-y-4">
               <form
@@ -806,10 +1140,10 @@ export const MasterDataModal: React.FC<Props> = ({
                   <input
                     type="text"
                     required
-                    placeholder="Contoh: LAB-TIK / Lapangan / R-101"
+                    placeholder="Contoh: LAB-FISIKA / Lapangan"
                     value={roomName}
                     onChange={(e) => setRoomName(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
                   />
                 </div>
                 <div>
@@ -817,7 +1151,7 @@ export const MasterDataModal: React.FC<Props> = ({
                   <select
                     value={roomType}
                     onChange={(e) => setRoomType(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
                   >
                     <option value="LAB">Laboratorium / Ruang Praktik</option>
                     <option value="THEORY">Ruang Teori / Reguler</option>
@@ -849,7 +1183,6 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
               </form>
 
-              {/* Baris Tombol Reset Ruangan */}
               <div className="flex items-center justify-between pt-1">
                 <span className="font-bold text-slate-700 text-xs">Daftar Ruangan Khusus ({rooms.length})</span>
                 {rooms.length > 0 && (
@@ -858,7 +1191,6 @@ export const MasterDataModal: React.FC<Props> = ({
                     onClick={() => handleResetAllCategory('rooms', 'Ruangan Khusus')}
                     disabled={loading}
                     className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
-                    title="Kosongkan seluruh ruangan khusus untuk sekolah ini"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
                     <span>Kosongkan Semua Ruangan</span>
@@ -894,14 +1226,12 @@ export const MasterDataModal: React.FC<Props> = ({
                             <button
                               onClick={() => handleStartEditRoom(r)}
                               className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
-                              title="Edit Ruangan"
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => handleDelete('rooms', r.id, r.room_name)}
                               className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
-                              title="Hapus Ruangan"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -921,7 +1251,7 @@ export const MasterDataModal: React.FC<Props> = ({
           )}
         </div>
 
-        {/* Footer Modal (Diberi shrink-0) */}
+        {/* Footer Modal */}
         <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
           <button
             onClick={() => {
