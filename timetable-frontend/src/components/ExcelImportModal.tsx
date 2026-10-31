@@ -14,30 +14,20 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
   const [file, setFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [importSummary, setImportSummary] = useState<{
-    teachersCount: number;
     subjectsCount: number;
-    classesCount: number;
     curriculumCount: number;
+    teachersCount: number;
+    classesCount: number;
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   if (!isOpen) return null;
 
-  // 1. Fungsi Unduh Template Excel 4 Sheet Resmi
+  // 1. Template Excel dengan Urutan Alur Baru (Mapel -> Kurikulum -> Guru -> Kelas)
   const handleDownloadTemplate = () => {
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Guru (Lengkap dengan Ijazah & Linieritas)
-    const wsGuru = XLSX.utils.aoa_to_sheet([
-      ['Kode Guru*', 'Nama Lengkap & Gelar*', 'Jenjang (S1/S2/D4)', 'Jurusan Ijazah', 'Kode Mapel Linier', 'Maks JP Per Hari'],
-      ['G01', 'Drs. H. Ahmad Fauzi, M.Pd.', 'S1', 'Pendidikan Matematika', 'MAT', 8],
-      ['G02', 'Siti Rahmawati, S.Pd.', 'S1', 'Pendidikan Bahasa Indonesia', 'BIN', 8],
-      ['G03', 'Budi Santoso, M.Si.', 'S2', 'Fisika', 'FIS', 8],
-      ['G04', 'Nurul Hidayati, S.Pd.', 'S1', 'Pendidikan Bahasa Inggris', 'BIG', 8],
-    ]);
-    XLSX.utils.book_append_sheet(wb, wsGuru, 'GURU');
-
-    // Sheet 2: Mata Pelajaran
+    // Sheet 1: Mata Pelajaran (Dibuat pertama sebagai acuan kode mapel)
     const wsMapel = XLSX.utils.aoa_to_sheet([
       ['Kode Mapel*', 'Nama Mata Pelajaran*'],
       ['MAT', 'Matematika'],
@@ -46,10 +36,40 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       ['FIS', 'Fisika'],
       ['KIM', 'Kimia'],
       ['BIO', 'Biologi'],
+      ['PAI', 'Pendidikan Agama Islam'],
+      ['PJOK', 'Pendidikan Jasmani Olahraga & Kesehatan'],
     ]);
     XLSX.utils.book_append_sheet(wb, wsMapel, 'MAPEL');
 
-    // Sheet 3: Kelas
+    // Sheet 2: Struktur Kurikulum Baku per Jenjang
+    const wsKurikulum = XLSX.utils.aoa_to_sheet([
+      ['Tingkat (7-12)*', 'Kode Mapel*', 'Standar JP*', 'Kategori (WAJIB/PILIHAN)*'],
+      [10, 'MAT', 4, 'WAJIB'],
+      [10, 'BIN', 4, 'WAJIB'],
+      [10, 'BIG', 3, 'WAJIB'],
+      [10, 'FIS', 3, 'WAJIB'],
+      [10, 'PAI', 3, 'WAJIB'],
+      [11, 'MAT', 4, 'WAJIB'],
+      [11, 'BIN', 4, 'WAJIB'],
+      [11, 'FIS', 5, 'PILIHAN'],
+      [11, 'KIM', 5, 'PILIHAN'],
+      [11, 'BIO', 5, 'PILIHAN'],
+      [12, 'FIS', 5, 'PILIHAN'],
+    ]);
+    XLSX.utils.book_append_sheet(wb, wsKurikulum, 'KURIKULUM');
+
+    // Sheet 3: Guru (Kolom Maks JP Dihapus, Fokus ke Ijazah & Linieritas)
+    const wsGuru = XLSX.utils.aoa_to_sheet([
+      ['Kode Guru*', 'Nama Lengkap & Gelar*', 'Jenjang (S1/S2/D4)', 'Jurusan Ijazah', 'Kode Mapel Linier'],
+      ['G01', 'Drs. H. Ahmad Fauzi, M.Pd.', 'S1', 'Pendidikan Matematika', 'MAT'],
+      ['G02', 'Siti Rahmawati, S.Pd.', 'S1', 'Pendidikan Bahasa Indonesia', 'BIN'],
+      ['G03', 'Budi Santoso, M.Si.', 'S2', 'Fisika', 'FIS'],
+      ['G04', 'Nurul Hidayati, S.Pd.', 'S1', 'Pendidikan Bahasa Inggris', 'BIG'],
+      ['G05', 'Hendra Wijaya, S.Pd.', 'S1', 'Pendidikan Jasmani', 'PJOK'],
+    ]);
+    XLSX.utils.book_append_sheet(wb, wsGuru, 'GURU');
+
+    // Sheet 4: Kelas Rombongan Belajar
     const wsKelas = XLSX.utils.aoa_to_sheet([
       ['Nama Kelas*', 'Tingkat (7-12)*'],
       ['X-A', 10],
@@ -59,22 +79,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       ['XII-IPA1', 12],
     ]);
     XLSX.utils.book_append_sheet(wb, wsKelas, 'KELAS');
-
-    // Sheet 4: Struktur Kurikulum Baku per Jenjang
-    const wsKurikulum = XLSX.utils.aoa_to_sheet([
-      ['Tingkat (7-12)*', 'Kode Mapel*', 'Standar JP*', 'Kategori (WAJIB/PILIHAN)*'],
-      [10, 'MAT', 4, 'WAJIB'],
-      [10, 'BIN', 4, 'WAJIB'],
-      [10, 'BIG', 3, 'WAJIB'],
-      [10, 'FIS', 3, 'WAJIB'],
-      [11, 'MAT', 4, 'WAJIB'],
-      [11, 'BIN', 4, 'WAJIB'],
-      [11, 'FIS', 5, 'PILIHAN'],
-      [11, 'KIM', 5, 'PILIHAN'],
-      [11, 'BIO', 5, 'PILIHAN'],
-      [12, 'FIS', 5, 'PILIHAN'],
-    ]);
-    XLSX.utils.book_append_sheet(wb, wsKurikulum, 'KURIKULUM');
 
     XLSX.writeFile(wb, 'Template_Master_Data_Sekolah.xlsx');
   };
@@ -87,7 +91,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
     }
   };
 
-  // 2. Proses Import Massal 4 Entitas ke Supabase
+  // 2. Eksekusi Import dengan Urutan Dependensi Relasional
   const handleProcessImport = async () => {
     if (!file) {
       setErrorMessage('Pilih file Excel terlebih dahulu.');
@@ -107,13 +111,13 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: 'buffer' });
 
-      let importedTeachers = 0;
       let importedSubjects = 0;
-      let importedClasses = 0;
       let importedCurriculum = 0;
+      let importedTeachers = 0;
+      let importedClasses = 0;
 
       // ==========================================
-      // TAHAP A: IMPORT MATA PELAJARAN (Prioritas Utama agar ID tersedia)
+      // LANGKAH 1: IMPORT MATA PELAJARAN
       // ==========================================
       const sheetMapelName = wb.SheetNames.find(
         (s) => s.toUpperCase().includes('MAPEL') || s.toUpperCase().includes('SUBJECT')
@@ -141,7 +145,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         }
       }
 
-      // Ambil daftar lengkap mapel sekolah aktif untuk pemetaan kode -> ID
+      // Ambil referensi mapel aktif untuk pemetaan kode -> UUID
       const { data: allSubjects, error: subFetchErr } = await supabase
         .from('subjects')
         .select('id, subject_code, subject_name')
@@ -149,126 +153,10 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       if (subFetchErr) throw subFetchErr;
 
       const codeToSubjectId = new Map<string, string>();
-      allSubjects?.forEach((s) => {
-        codeToSubjectId.set(s.subject_code.toUpperCase(), s.id);
-      });
+      allSubjects?.forEach((s) => codeToSubjectId.set(s.subject_code.toUpperCase(), s.id));
 
       // ==========================================
-      // TAHAP B: IMPORT GURU, IJAZAH, & PEMETAAN LINIERITAS
-      // ==========================================
-      const sheetGuruName = wb.SheetNames.find((s) => s.toUpperCase().includes('GURU'));
-      if (sheetGuruName) {
-        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetGuruName]);
-        const teacherRecords = rows
-          .map((r) => ({
-            school_id: schoolId,
-            teacher_code: String(r['Kode Guru*'] || r['Kode Guru'] || r['KODE'] || '').trim().toUpperCase(),
-            full_name: String(r['Nama Lengkap & Gelar*'] || r['Nama Guru'] || r['NAMA'] || '').trim(),
-            education_degree: String(r['Jenjang (S1/S2/D4)'] || r['Jenjang'] || r['Gelar'] || 'S1').trim(),
-            major: String(r['Jurusan Ijazah'] || r['Jurusan'] || r['Prodi'] || '').trim(),
-            max_periods_per_day: Number(r['Maks JP Per Hari'] || r['Maks JP'] || 8),
-            raw_eligible_codes: String(r['Kode Mapel Linier'] || r['Mapel Linier'] || '').trim(),
-            unavailable_slots: [],
-          }))
-          .filter((t) => t.teacher_code && t.full_name);
-
-        const uniqueTeachers = Array.from(
-          new Map(teacherRecords.map((t) => [t.teacher_code, t])).values()
-        );
-
-        if (uniqueTeachers.length > 0) {
-          // 1. Simpan Guru ke tabel teachers
-          const payloadTeachers = uniqueTeachers.map(({ raw_eligible_codes, ...rest }) => rest);
-          const { error: tErr } = await supabase.from('teachers').upsert(payloadTeachers, {
-            onConflict: 'school_id,teacher_code',
-          });
-          if (tErr) throw tErr;
-          importedTeachers = payloadTeachers.length;
-
-          // 2. Hubungkan Linieritas Guru ke tabel teacher_eligible_subjects
-          const { data: updatedTeachers } = await supabase
-            .from('teachers')
-            .select('id, teacher_code')
-            .eq('school_id', schoolId);
-
-          const teacherCodeToId = new Map<string, string>();
-          updatedTeachers?.forEach((t) => teacherCodeToId.set(t.teacher_code.toUpperCase(), t.id));
-
-          const eligiblePayload: { school_id: string; teacher_id: string; subject_id: string }[] = [];
-          uniqueTeachers.forEach((t) => {
-            const tId = teacherCodeToId.get(t.teacher_code);
-            if (!tId) return;
-
-            // Jika ada kode mapel linier tertulis (misal: "MAT, FIS" atau "MAT")
-            if (t.raw_eligible_codes) {
-              const codes = t.raw_eligible_codes
-                .split(/[,;/]+/)
-                .map((c) => c.trim().toUpperCase())
-                .filter(Boolean);
-
-              codes.forEach((code) => {
-                const sId = codeToSubjectId.get(code);
-                if (sId) {
-                  eligiblePayload.push({
-                    school_id: schoolId,
-                    teacher_id: tId,
-                    subject_id: sId,
-                  });
-                }
-              });
-            } else if (t.major) {
-              // Otomatis pasangkan jika nama jurusan memuat nama mata pelajaran
-              allSubjects?.forEach((s) => {
-                if (t.major.toLowerCase().includes(s.subject_name.toLowerCase())) {
-                  eligiblePayload.push({
-                    school_id: schoolId,
-                    teacher_id: tId,
-                    subject_id: s.id,
-                  });
-                }
-              });
-            }
-          });
-
-          if (eligiblePayload.length > 0) {
-            await supabase.from('teacher_eligible_subjects').upsert(eligiblePayload, {
-              onConflict: 'school_id,teacher_id,subject_id',
-            });
-          }
-        }
-      }
-
-      // ==========================================
-      // TAHAP C: IMPORT KELAS ROMBEL
-      // ==========================================
-      const sheetKelasName = wb.SheetNames.find(
-        (s) => s.toUpperCase().includes('KELAS') || s.toUpperCase().includes('CLASS')
-      );
-      if (sheetKelasName) {
-        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetKelasName]);
-        const classRecords = rows
-          .map((r) => ({
-            school_id: schoolId,
-            class_name: String(r['Nama Kelas*'] || r['Kelas'] || r['ROMBEL'] || '').trim(),
-            grade_level: Number(r['Tingkat (7-12)*'] || r['Tingkat'] || 10),
-          }))
-          .filter((c) => c.class_name);
-
-        const uniqueClasses = Array.from(
-          new Map(classRecords.map((c) => [c.class_name, c])).values()
-        );
-
-        if (uniqueClasses.length > 0) {
-          const { error } = await supabase.from('classes').upsert(uniqueClasses, {
-            onConflict: 'school_id,class_name',
-          });
-          if (error) throw error;
-          importedClasses = uniqueClasses.length;
-        }
-      }
-
-      // ==========================================
-      // TAHAP D: IMPORT STRUKTUR KURIKULUM (STANDAR JP JENJANG)
+      // LANGKAH 2: IMPORT STRUKTUR KURIKULUM (Opsional / Graceful)
       // ==========================================
       const sheetKurikulumName = wb.SheetNames.find(
         (s) =>
@@ -307,7 +195,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
           }
         });
 
-        // Deduplikasi unik berdasarkan (grade_level, subject_id)
         const uniqueCurriculum = Array.from(
           new Map(curriculumRecords.map((c) => [`${c.grade_level}_${c.subject_id}`, c])).values()
         );
@@ -321,11 +208,123 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         }
       }
 
+      // ==========================================
+      // LANGKAH 3: IMPORT GURU, IJAZAH & LINIERITAS MAPEL
+      // ==========================================
+      const sheetGuruName = wb.SheetNames.find((s) => s.toUpperCase().includes('GURU'));
+      if (sheetGuruName) {
+        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetGuruName]);
+        const teacherRecords = rows
+          .map((r) => ({
+            school_id: schoolId,
+            teacher_code: String(r['Kode Guru*'] || r['Kode Guru'] || r['KODE'] || '').trim().toUpperCase(),
+            full_name: String(r['Nama Lengkap & Gelar*'] || r['Nama Guru'] || r['NAMA'] || '').trim(),
+            education_degree: String(r['Jenjang (S1/S2/D4)'] || r['Jenjang'] || r['Gelar'] || 'S1').trim(),
+            major: String(r['Jurusan Ijazah'] || r['Jurusan'] || r['Prodi'] || '').trim(),
+            max_periods_per_day: 8, // Baku default; pembatasan diatur via menu Kebijakan Guru
+            raw_eligible_codes: String(r['Kode Mapel Linier'] || r['Mapel Linier'] || '').trim(),
+            unavailable_slots: [],
+          }))
+          .filter((t) => t.teacher_code && t.full_name);
+
+        const uniqueTeachers = Array.from(
+          new Map(teacherRecords.map((t) => [t.teacher_code, t])).values()
+        );
+
+        if (uniqueTeachers.length > 0) {
+          // A. Simpan/Update Guru
+          const payloadTeachers = uniqueTeachers.map(({ raw_eligible_codes, ...rest }) => rest);
+          const { error: tErr } = await supabase.from('teachers').upsert(payloadTeachers, {
+            onConflict: 'school_id,teacher_code',
+          });
+          if (tErr) throw tErr;
+          importedTeachers = payloadTeachers.length;
+
+          // B. Hubungkan Linieritas Guru
+          const { data: updatedTeachers } = await supabase
+            .from('teachers')
+            .select('id, teacher_code')
+            .eq('school_id', schoolId);
+
+          const teacherCodeToId = new Map<string, string>();
+          updatedTeachers?.forEach((t) => teacherCodeToId.set(t.teacher_code.toUpperCase(), t.id));
+
+          const eligiblePayload: { school_id: string; teacher_id: string; subject_id: string }[] = [];
+          uniqueTeachers.forEach((t) => {
+            const tId = teacherCodeToId.get(t.teacher_code);
+            if (!tId) return;
+
+            if (t.raw_eligible_codes) {
+              const codes = t.raw_eligible_codes
+                .split(/[,;/]+/)
+                .map((c) => c.trim().toUpperCase())
+                .filter(Boolean);
+
+              codes.forEach((code) => {
+                const sId = codeToSubjectId.get(code);
+                if (sId) {
+                  eligiblePayload.push({
+                    school_id: schoolId,
+                    teacher_id: tId,
+                    subject_id: sId,
+                  });
+                }
+              });
+            } else if (t.major) {
+              allSubjects?.forEach((s) => {
+                if (t.major.toLowerCase().includes(s.subject_name.toLowerCase())) {
+                  eligiblePayload.push({
+                    school_id: schoolId,
+                    teacher_id: tId,
+                    subject_id: s.id,
+                  });
+                }
+              });
+            }
+          });
+
+          if (eligiblePayload.length > 0) {
+            await supabase.from('teacher_eligible_subjects').upsert(eligiblePayload, {
+              onConflict: 'school_id,teacher_id,subject_id',
+            });
+          }
+        }
+      }
+
+      // ==========================================
+      // LANGKAH 4: IMPORT KELAS ROMBEL
+      // ==========================================
+      const sheetKelasName = wb.SheetNames.find(
+        (s) => s.toUpperCase().includes('KELAS') || s.toUpperCase().includes('CLASS')
+      );
+      if (sheetKelasName) {
+        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetKelasName]);
+        const classRecords = rows
+          .map((r) => ({
+            school_id: schoolId,
+            class_name: String(r['Nama Kelas*'] || r['Kelas'] || r['ROMBEL'] || '').trim(),
+            grade_level: Number(r['Tingkat (7-12)*'] || r['Tingkat'] || 10),
+          }))
+          .filter((c) => c.class_name);
+
+        const uniqueClasses = Array.from(
+          new Map(classRecords.map((c) => [c.class_name, c])).values()
+        );
+
+        if (uniqueClasses.length > 0) {
+          const { error } = await supabase.from('classes').upsert(uniqueClasses, {
+            onConflict: 'school_id,class_name',
+          });
+          if (error) throw error;
+          importedClasses = uniqueClasses.length;
+        }
+      }
+
       setImportSummary({
-        teachersCount: importedTeachers,
         subjectsCount: importedSubjects,
-        classesCount: importedClasses,
         curriculumCount: importedCurriculum,
+        teachersCount: importedTeachers,
+        classesCount: importedClasses,
       });
 
       onDataImported();
@@ -343,7 +342,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         <div className="p-4 bg-emerald-800 text-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <FileSpreadsheet className="w-5 h-5 text-emerald-300" />
-            <h2 className="text-base font-bold">Import Data Master & Kurikulum dari Excel</h2>
+            <h2 className="text-base font-bold">Import Data Master & Kurikulum Excel</h2>
           </div>
           <button
             onClick={onClose}
@@ -355,12 +354,11 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
 
         {/* Badan Modal */}
         <div className="p-6 space-y-4 text-xs">
-          {/* Instruksi & Download Template */}
           <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3">
             <div>
-              <p className="font-bold text-emerald-900">Belum punya format Excel yang sesuai?</p>
+              <p className="font-bold text-emerald-900">Format Excel Standar Baru</p>
               <p className="text-[11px] text-emerald-700 mt-0.5">
-                Unduh template resmi 4 sheet (GURU, MAPEL, KELAS, KURIKULUM):
+                Unduh template resmi 4 sheet (MAPEL &rarr; KURIKULUM &rarr; GURU &rarr; KELAS):
               </p>
             </div>
             <button
@@ -372,7 +370,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
             </button>
           </div>
 
-          {/* Area Upload File */}
           <div className="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-6 text-center transition bg-slate-50/50">
             <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
             <label className="block font-semibold text-slate-700 mb-1 cursor-pointer">
@@ -393,23 +390,21 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
             )}
           </div>
 
-          {/* Alert Notifikasi Sukses */}
           {importSummary && (
             <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 flex items-start gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
               <div>
                 <p className="font-bold">Import Data Berhasil!</p>
                 <ul className="list-disc list-inside mt-1 text-[11px] space-y-0.5 text-emerald-800">
-                  <li>{importSummary.teachersCount} data guru & kualifikasi diperbarui</li>
                   <li>{importSummary.subjectsCount} mata pelajaran diperbarui</li>
+                  <li>{importSummary.curriculumCount} standar JP kurikulum diterapkan</li>
+                  <li>{importSummary.teachersCount} guru & linieritas diperbarui</li>
                   <li>{importSummary.classesCount} kelas rombel diperbarui</li>
-                  <li>{importSummary.curriculumCount} standar JP kurikulum jenjang diterapkan</li>
                 </ul>
               </div>
             </div>
           )}
 
-          {/* Alert Error */}
           {errorMessage && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
