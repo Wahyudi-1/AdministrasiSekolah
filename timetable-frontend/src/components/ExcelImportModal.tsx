@@ -17,20 +17,23 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
     teachersCount: number;
     subjectsCount: number;
     classesCount: number;
+    curriculumCount: number;
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   if (!isOpen) return null;
 
+  // 1. Fungsi Unduh Template Excel 4 Sheet Resmi
   const handleDownloadTemplate = () => {
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Guru
+    // Sheet 1: Guru (Lengkap dengan Ijazah & Linieritas)
     const wsGuru = XLSX.utils.aoa_to_sheet([
-      ['Kode Guru*', 'Nama Lengkap & Gelar*', 'Maks JP Per Hari'],
-      ['G01', 'Drs. H. Ahmad Fauzi, M.Pd.', 6],
-      ['G02', 'Siti Rahmawati, S.Pd.', 6],
-      ['G03', 'Budi Santoso, M.Si.', 8],
+      ['Kode Guru*', 'Nama Lengkap & Gelar*', 'Jenjang (S1/S2/D4)', 'Jurusan Ijazah', 'Kode Mapel Linier', 'Maks JP Per Hari'],
+      ['G01', 'Drs. H. Ahmad Fauzi, M.Pd.', 'S1', 'Pendidikan Matematika', 'MAT', 8],
+      ['G02', 'Siti Rahmawati, S.Pd.', 'S1', 'Pendidikan Bahasa Indonesia', 'BIN', 8],
+      ['G03', 'Budi Santoso, M.Si.', 'S2', 'Fisika', 'FIS', 8],
+      ['G04', 'Nurul Hidayati, S.Pd.', 'S1', 'Pendidikan Bahasa Inggris', 'BIG', 8],
     ]);
     XLSX.utils.book_append_sheet(wb, wsGuru, 'GURU');
 
@@ -41,6 +44,8 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       ['BIN', 'Bahasa Indonesia'],
       ['BIG', 'Bahasa Inggris'],
       ['FIS', 'Fisika'],
+      ['KIM', 'Kimia'],
+      ['BIO', 'Biologi'],
     ]);
     XLSX.utils.book_append_sheet(wb, wsMapel, 'MAPEL');
 
@@ -49,10 +54,27 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       ['Nama Kelas*', 'Tingkat (7-12)*'],
       ['X-A', 10],
       ['X-B', 10],
-      ['XI-IPA-1', 11],
-      ['XII-IPA-1', 12],
+      ['XI-F1', 11],
+      ['XI-F2', 11],
+      ['XII-IPA1', 12],
     ]);
     XLSX.utils.book_append_sheet(wb, wsKelas, 'KELAS');
+
+    // Sheet 4: Struktur Kurikulum Baku per Jenjang
+    const wsKurikulum = XLSX.utils.aoa_to_sheet([
+      ['Tingkat (7-12)*', 'Kode Mapel*', 'Standar JP*', 'Kategori (WAJIB/PILIHAN)*'],
+      [10, 'MAT', 4, 'WAJIB'],
+      [10, 'BIN', 4, 'WAJIB'],
+      [10, 'BIG', 3, 'WAJIB'],
+      [10, 'FIS', 3, 'WAJIB'],
+      [11, 'MAT', 4, 'WAJIB'],
+      [11, 'BIN', 4, 'WAJIB'],
+      [11, 'FIS', 5, 'PILIHAN'],
+      [11, 'KIM', 5, 'PILIHAN'],
+      [11, 'BIO', 5, 'PILIHAN'],
+      [12, 'FIS', 5, 'PILIHAN'],
+    ]);
+    XLSX.utils.book_append_sheet(wb, wsKurikulum, 'KURIKULUM');
 
     XLSX.writeFile(wb, 'Template_Master_Data_Sekolah.xlsx');
   };
@@ -65,6 +87,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
     }
   };
 
+  // 2. Proses Import Massal 4 Entitas ke Supabase
   const handleProcessImport = async () => {
     if (!file) {
       setErrorMessage('Pilih file Excel terlebih dahulu.');
@@ -87,36 +110,11 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
       let importedTeachers = 0;
       let importedSubjects = 0;
       let importedClasses = 0;
+      let importedCurriculum = 0;
 
-      // A. Import GURU
-      const sheetGuruName = wb.SheetNames.find((s) => s.toUpperCase().includes('GURU'));
-      if (sheetGuruName) {
-        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetGuruName]);
-        const teacherRecords = rows
-          .map((r) => ({
-            school_id: schoolId,
-            teacher_code: String(r['Kode Guru*'] || r['Kode Guru'] || r['KODE'] || '').trim().toUpperCase(),
-            full_name: String(r['Nama Lengkap & Gelar*'] || r['Nama Guru'] || r['NAMA'] || '').trim(),
-            max_periods_per_day: Number(r['Maks JP Per Hari'] || 6),
-            unavailable_slots: [],
-          }))
-          .filter((t) => t.teacher_code && t.full_name);
-
-        // Deduplikasi unik per teacher_code dalam file yang sama
-        const uniqueTeachers = Array.from(
-          new Map(teacherRecords.map((t) => [t.teacher_code, t])).values()
-        );
-
-        if (uniqueTeachers.length > 0) {
-          const { error } = await supabase.from('teachers').upsert(uniqueTeachers, {
-            onConflict: 'school_id,teacher_code',
-          });
-          if (error) throw error;
-          importedTeachers = uniqueTeachers.length;
-        }
-      }
-
-      // B. Import MATA PELAJARAN
+      // ==========================================
+      // TAHAP A: IMPORT MATA PELAJARAN (Prioritas Utama agar ID tersedia)
+      // ==========================================
       const sheetMapelName = wb.SheetNames.find(
         (s) => s.toUpperCase().includes('MAPEL') || s.toUpperCase().includes('SUBJECT')
       );
@@ -130,7 +128,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
           }))
           .filter((s) => s.subject_code && s.subject_name);
 
-        // Deduplikasi unik per subject_code dalam file yang sama
         const uniqueSubjects = Array.from(
           new Map(subjectRecords.map((s) => [s.subject_code, s])).values()
         );
@@ -144,7 +141,106 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         }
       }
 
-      // C. Import KELAS
+      // Ambil daftar lengkap mapel sekolah aktif untuk pemetaan kode -> ID
+      const { data: allSubjects, error: subFetchErr } = await supabase
+        .from('subjects')
+        .select('id, subject_code, subject_name')
+        .eq('school_id', schoolId);
+      if (subFetchErr) throw subFetchErr;
+
+      const codeToSubjectId = new Map<string, string>();
+      allSubjects?.forEach((s) => {
+        codeToSubjectId.set(s.subject_code.toUpperCase(), s.id);
+      });
+
+      // ==========================================
+      // TAHAP B: IMPORT GURU, IJAZAH, & PEMETAAN LINIERITAS
+      // ==========================================
+      const sheetGuruName = wb.SheetNames.find((s) => s.toUpperCase().includes('GURU'));
+      if (sheetGuruName) {
+        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetGuruName]);
+        const teacherRecords = rows
+          .map((r) => ({
+            school_id: schoolId,
+            teacher_code: String(r['Kode Guru*'] || r['Kode Guru'] || r['KODE'] || '').trim().toUpperCase(),
+            full_name: String(r['Nama Lengkap & Gelar*'] || r['Nama Guru'] || r['NAMA'] || '').trim(),
+            education_degree: String(r['Jenjang (S1/S2/D4)'] || r['Jenjang'] || r['Gelar'] || 'S1').trim(),
+            major: String(r['Jurusan Ijazah'] || r['Jurusan'] || r['Prodi'] || '').trim(),
+            max_periods_per_day: Number(r['Maks JP Per Hari'] || r['Maks JP'] || 8),
+            raw_eligible_codes: String(r['Kode Mapel Linier'] || r['Mapel Linier'] || '').trim(),
+            unavailable_slots: [],
+          }))
+          .filter((t) => t.teacher_code && t.full_name);
+
+        const uniqueTeachers = Array.from(
+          new Map(teacherRecords.map((t) => [t.teacher_code, t])).values()
+        );
+
+        if (uniqueTeachers.length > 0) {
+          // 1. Simpan Guru ke tabel teachers
+          const payloadTeachers = uniqueTeachers.map(({ raw_eligible_codes, ...rest }) => rest);
+          const { error: tErr } = await supabase.from('teachers').upsert(payloadTeachers, {
+            onConflict: 'school_id,teacher_code',
+          });
+          if (tErr) throw tErr;
+          importedTeachers = payloadTeachers.length;
+
+          // 2. Hubungkan Linieritas Guru ke tabel teacher_eligible_subjects
+          const { data: updatedTeachers } = await supabase
+            .from('teachers')
+            .select('id, teacher_code')
+            .eq('school_id', schoolId);
+
+          const teacherCodeToId = new Map<string, string>();
+          updatedTeachers?.forEach((t) => teacherCodeToId.set(t.teacher_code.toUpperCase(), t.id));
+
+          const eligiblePayload: { school_id: string; teacher_id: string; subject_id: string }[] = [];
+          uniqueTeachers.forEach((t) => {
+            const tId = teacherCodeToId.get(t.teacher_code);
+            if (!tId) return;
+
+            // Jika ada kode mapel linier tertulis (misal: "MAT, FIS" atau "MAT")
+            if (t.raw_eligible_codes) {
+              const codes = t.raw_eligible_codes
+                .split(/[,;/]+/)
+                .map((c) => c.trim().toUpperCase())
+                .filter(Boolean);
+
+              codes.forEach((code) => {
+                const sId = codeToSubjectId.get(code);
+                if (sId) {
+                  eligiblePayload.push({
+                    school_id: schoolId,
+                    teacher_id: tId,
+                    subject_id: sId,
+                  });
+                }
+              });
+            } else if (t.major) {
+              // Otomatis pasangkan jika nama jurusan memuat nama mata pelajaran
+              allSubjects?.forEach((s) => {
+                if (t.major.toLowerCase().includes(s.subject_name.toLowerCase())) {
+                  eligiblePayload.push({
+                    school_id: schoolId,
+                    teacher_id: tId,
+                    subject_id: s.id,
+                  });
+                }
+              });
+            }
+          });
+
+          if (eligiblePayload.length > 0) {
+            await supabase.from('teacher_eligible_subjects').upsert(eligiblePayload, {
+              onConflict: 'school_id,teacher_id,subject_id',
+            });
+          }
+        }
+      }
+
+      // ==========================================
+      // TAHAP C: IMPORT KELAS ROMBEL
+      // ==========================================
       const sheetKelasName = wb.SheetNames.find(
         (s) => s.toUpperCase().includes('KELAS') || s.toUpperCase().includes('CLASS')
       );
@@ -158,7 +254,6 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
           }))
           .filter((c) => c.class_name);
 
-        // Deduplikasi unik per class_name dalam file yang sama
         const uniqueClasses = Array.from(
           new Map(classRecords.map((c) => [c.class_name, c])).values()
         );
@@ -172,10 +267,65 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         }
       }
 
+      // ==========================================
+      // TAHAP D: IMPORT STRUKTUR KURIKULUM (STANDAR JP JENJANG)
+      // ==========================================
+      const sheetKurikulumName = wb.SheetNames.find(
+        (s) =>
+          s.toUpperCase().includes('KURIKULUM') ||
+          s.toUpperCase().includes('CURRICULUM') ||
+          s.toUpperCase().includes('STANDAR')
+      );
+      if (sheetKurikulumName) {
+        const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetKurikulumName]);
+        const curriculumRecords: {
+          school_id: string;
+          grade_level: number;
+          subject_id: string;
+          default_periods: number;
+          is_compulsory: boolean;
+        }[] = [];
+
+        rows.forEach((r) => {
+          const grade = Number(r['Tingkat (7-12)*'] || r['Tingkat'] || r['Jenjang'] || 10);
+          const subCode = String(r['Kode Mapel*'] || r['Kode Mapel'] || r['KODE'] || '').trim().toUpperCase();
+          const defaultJP = Number(r['Standar JP*'] || r['Standar JP'] || r['JP'] || 4);
+          const categoryRaw = String(r['Kategori (WAJIB/PILIHAN)*'] || r['Kategori'] || r['Sifat'] || 'WAJIB')
+            .trim()
+            .toUpperCase();
+          const isCompulsory = !categoryRaw.includes('PILIHAN');
+
+          const subId = codeToSubjectId.get(subCode);
+          if (subId && grade > 0 && defaultJP > 0) {
+            curriculumRecords.push({
+              school_id: schoolId,
+              grade_level: grade,
+              subject_id: subId,
+              default_periods: defaultJP,
+              is_compulsory: isCompulsory,
+            });
+          }
+        });
+
+        // Deduplikasi unik berdasarkan (grade_level, subject_id)
+        const uniqueCurriculum = Array.from(
+          new Map(curriculumRecords.map((c) => [`${c.grade_level}_${c.subject_id}`, c])).values()
+        );
+
+        if (uniqueCurriculum.length > 0) {
+          const { error: currErr } = await supabase.from('curriculum_structures').upsert(uniqueCurriculum, {
+            onConflict: 'school_id,grade_level,subject_id',
+          });
+          if (currErr) throw currErr;
+          importedCurriculum = uniqueCurriculum.length;
+        }
+      }
+
       setImportSummary({
         teachersCount: importedTeachers,
         subjectsCount: importedSubjects,
         classesCount: importedClasses,
+        curriculumCount: importedCurriculum,
       });
 
       onDataImported();
@@ -193,7 +343,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
         <div className="p-4 bg-emerald-800 text-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <FileSpreadsheet className="w-5 h-5 text-emerald-300" />
-            <h2 className="text-base font-bold">Import Data Master dari Excel</h2>
+            <h2 className="text-base font-bold">Import Data Master & Kurikulum dari Excel</h2>
           </div>
           <button
             onClick={onClose}
@@ -205,11 +355,12 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
 
         {/* Badan Modal */}
         <div className="p-6 space-y-4 text-xs">
+          {/* Instruksi & Download Template */}
           <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3">
             <div>
               <p className="font-bold text-emerald-900">Belum punya format Excel yang sesuai?</p>
               <p className="text-[11px] text-emerald-700 mt-0.5">
-                Unduh template resmi 3 sheet (GURU, MAPEL, KELAS) berikut:
+                Unduh template resmi 4 sheet (GURU, MAPEL, KELAS, KURIKULUM):
               </p>
             </div>
             <button
@@ -221,6 +372,7 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
             </button>
           </div>
 
+          {/* Area Upload File */}
           <div className="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-6 text-center transition bg-slate-50/50">
             <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
             <label className="block font-semibold text-slate-700 mb-1 cursor-pointer">
@@ -241,20 +393,23 @@ export const ExcelImportModal: React.FC<Props> = ({ isOpen, onClose, onDataImpor
             )}
           </div>
 
+          {/* Alert Notifikasi Sukses */}
           {importSummary && (
             <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 flex items-start gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
               <div>
                 <p className="font-bold">Import Data Berhasil!</p>
                 <ul className="list-disc list-inside mt-1 text-[11px] space-y-0.5 text-emerald-800">
-                  <li>{importSummary.teachersCount} data guru diperbarui</li>
+                  <li>{importSummary.teachersCount} data guru & kualifikasi diperbarui</li>
                   <li>{importSummary.subjectsCount} mata pelajaran diperbarui</li>
                   <li>{importSummary.classesCount} kelas rombel diperbarui</li>
+                  <li>{importSummary.curriculumCount} standar JP kurikulum jenjang diterapkan</li>
                 </ul>
               </div>
             </div>
           )}
 
+          {/* Alert Error */}
           {errorMessage && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
