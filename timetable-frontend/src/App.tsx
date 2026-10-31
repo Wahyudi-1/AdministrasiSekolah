@@ -186,12 +186,8 @@ export const App: React.FC = () => {
       const result = await processSyncQueue(supabase, schoolId);
       refreshQueueCount();
       checkConflictCount();
-      if (result.processedCount > 0 || result.conflictCount > 0) {
-        setSyncFeedback(
-          `Selesai: ${result.processedCount} diterapkan${
-            result.conflictCount > 0 ? `, ${result.conflictCount} konflik ditemukan.` : '.'
-          }`
-        );
+      if (result.processedCount > 0) {
+        setSyncFeedback(`Selesai: ${result.processedCount} data berhasil disinkronkan ke cloud.`);
         setTimeout(() => setSyncFeedback(''), 5000);
         await fetchAllData();
       }
@@ -225,9 +221,7 @@ export const App: React.FC = () => {
         refreshQueueCount();
         checkConflictCount();
         fetchAllData();
-        setSyncFeedback(
-          `Background Sync tuntas: ${event.data.processed} diterapkan, ${event.data.conflicts} konflik.`
-        );
+        setSyncFeedback(`Background Sync tuntas: ${event.data.processed} data diterapkan.`);
         setTimeout(() => setSyncFeedback(''), 5000);
       }
     };
@@ -411,7 +405,7 @@ export const App: React.FC = () => {
     if (!isOnline) return;
 
     const jobsChannel = supabase
-      .channel(`realtime_generation_jobs_${session.user.id}`)
+      .channel(`realtime_jobs_${session.user.id}`)
       .on(
         'postgres_changes',
         {
@@ -617,48 +611,69 @@ export const App: React.FC = () => {
     const cleanPatternString = parts.join('+');
 
     try {
-      const updatedLessons = lessons.map((l) => {
-        if (configTargetClassIds.includes(l.class_id) && l.teacher_id === tId && l.subject_id === sId) {
-          return {
-            ...l,
-            split_pattern: cleanPatternString,
-            allowed_slot_types: configZone,
-            preferred_room_id: configRoomId || null,
-            version: (l.version || 1) + 1,
-          };
-        }
-        return l;
-      });
-      setLessons(updatedLessons);
-      updateLocalOfflineCache(schoolId, { lessons: updatedLessons });
+      if (isOnline) {
+        // Mode Online: langsung eksekusi ke Supabase cloud
+        const targetLessonIds = lessons
+          .filter((l) => configTargetClassIds.includes(l.class_id) && l.teacher_id === tId && l.subject_id === sId)
+          .map((l) => l.id);
 
-      for (const classId of configTargetClassIds) {
-        const existing = lessons.find(
-          (l) => l.class_id === classId && l.teacher_id === tId && l.subject_id === sId
-        );
-        if (existing) {
-          enqueueSyncAction({
-            school_id: schoolId,
-            table: 'lessons',
-            operation: 'update',
-            matchColumn: 'id',
-            matchValue: existing.id,
-            expected_version: existing.version || 1,
-            payload: {
+        if (targetLessonIds.length > 0) {
+          const { error } = await supabase
+            .from('lessons')
+            .update({
               split_pattern: cleanPatternString,
               allowed_slot_types: configZone,
               preferred_room_id: configRoomId || null,
-            },
-            description: `Update Kartu Mapel (${existing.id})`,
-          });
-        }
-      }
+              updated_at: new Date().toISOString(),
+            })
+            .eq('school_id', schoolId)
+            .in('id', targetLessonIds);
 
-      refreshQueueCount();
-      if (isOnline) {
-        await triggerAutoSync();
+          if (error) throw error;
+        }
+
+        await fetchAllData();
+        alert(`Berhasil memperbarui kartu pelajaran untuk ${targetLessonIds.length} kelas di cloud!`);
       } else {
-        alert('Tersimpan secara lokal (Offline). Background Sync akan aktif saat kembali online!');
+        // Mode Offline: simpan ke state lokal & antrean offline
+        const updatedLessons = lessons.map((l) => {
+          if (configTargetClassIds.includes(l.class_id) && l.teacher_id === tId && l.subject_id === sId) {
+            return {
+              ...l,
+              split_pattern: cleanPatternString,
+              allowed_slot_types: configZone,
+              preferred_room_id: configRoomId || null,
+              version: (l.version || 1) + 1,
+            };
+          }
+          return l;
+        });
+        setLessons(updatedLessons);
+        updateLocalOfflineCache(schoolId, { lessons: updatedLessons });
+
+        for (const classId of configTargetClassIds) {
+          const existing = lessons.find(
+            (l) => l.class_id === classId && l.teacher_id === tId && l.subject_id === sId
+          );
+          if (existing) {
+            enqueueSyncAction({
+              school_id: schoolId,
+              table: 'lessons',
+              operation: 'update',
+              matchColumn: 'id',
+              matchValue: existing.id,
+              payload: {
+                split_pattern: cleanPatternString,
+                allowed_slot_types: configZone,
+                preferred_room_id: configRoomId || null,
+              },
+              description: `Update Kartu Mapel (${existing.id})`,
+            });
+          }
+        }
+
+        refreshQueueCount();
+        alert('Tersimpan offline. Perubahan akan otomatis disinkronkan saat kembali terhubung ke internet.');
       }
     } catch (err: any) {
       alert(`Gagal menyimpan: ${err.message}`);
@@ -682,20 +697,33 @@ export const App: React.FC = () => {
     if (!schoolId) return;
     if (!confirm('Hapus kartu pelajaran ini?')) return;
 
-    const remaining = lessons.filter((l) => l.id !== id);
-    setLessons(remaining);
-    updateLocalOfflineCache(schoolId, { lessons: remaining });
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from('lessons')
+          .delete()
+          .eq('id', id)
+          .eq('school_id', schoolId);
+        if (error) throw error;
+        await fetchAllData();
+      } else {
+        const remaining = lessons.filter((l) => l.id !== id);
+        setLessons(remaining);
+        updateLocalOfflineCache(schoolId, { lessons: remaining });
 
-    enqueueSyncAction({
-      school_id: schoolId,
-      table: 'lessons',
-      operation: 'delete',
-      matchColumn: 'id',
-      matchValue: id,
-      description: `Hapus Kartu Pelajaran (${id})`,
-    });
-    refreshQueueCount();
-    if (isOnline) triggerAutoSync();
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'lessons',
+          operation: 'delete',
+          matchColumn: 'id',
+          matchValue: id,
+          description: `Hapus Kartu Pelajaran (${id})`,
+        });
+        refreshQueueCount();
+      }
+    } catch (err: any) {
+      alert(`Gagal menghapus kartu pelajaran: ${err.message}`);
+    }
   };
 
   const handleToggleDay = async (day: WorkDay) => {
@@ -703,22 +731,35 @@ export const App: React.FC = () => {
     if (!schoolId) return;
 
     const newActive = !day.is_active;
-    const updated = workDays.map((d) => (d.id === day.id ? { ...d, is_active: newActive } : d));
-    setWorkDays(updated);
-    updateLocalOfflineCache(schoolId, { workDays: updated });
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from('work_days')
+          .update({ is_active: newActive, updated_at: new Date().toISOString() })
+          .eq('id', day.id)
+          .eq('school_id', schoolId);
+        if (error) throw error;
+        await fetchAllData();
+      } else {
+        const updated = workDays.map((d) => (d.id === day.id ? { ...d, is_active: newActive } : d));
+        setWorkDays(updated);
+        updateLocalOfflineCache(schoolId, { workDays: updated });
 
-    enqueueSyncAction({
-      school_id: schoolId,
-      table: 'work_days',
-      operation: 'update',
-      matchColumn: 'id',
-      matchValue: day.id,
-      expected_version: day.version || 1,
-      payload: { is_active: newActive },
-      description: `Ubah status hari ${day.day_name}`,
-    });
-    refreshQueueCount();
-    if (isOnline) triggerAutoSync();
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'work_days',
+          operation: 'update',
+          matchColumn: 'id',
+          matchValue: day.id,
+          expected_version: day.version || 1,
+          payload: { is_active: newActive },
+          description: `Ubah status hari ${day.day_name}`,
+        });
+        refreshQueueCount();
+      }
+    } catch (err: any) {
+      alert(`Gagal mengubah status hari: ${err.message}`);
+    }
   };
 
   const handleToggleTargetDay = (dayIndex: number) => {
@@ -748,33 +789,38 @@ export const App: React.FC = () => {
     }));
 
     try {
-      const existingFiltered = timeSlots.filter(
-        (s) => !targetDayIndices.includes(s.day_index) || s.period_number !== Number(slotPeriod)
-      );
-      const newLocalSlots = [
-        ...existingFiltered,
-        ...recordsToUpsert.map((r, i) => ({ ...r, id: `local_slot_${r.day_index}_${r.period_number}_${i}` })),
-      ] as TimeSlot[];
-      setTimeSlots(newLocalSlots);
-      updateLocalOfflineCache(schoolId, { timeSlots: newLocalSlots });
-
-      enqueueSyncAction({
-        school_id: schoolId,
-        table: 'time_slots',
-        operation: 'upsert',
-        matchColumn: 'school_id,day_index,period_number',
-        payload: recordsToUpsert,
-        description: `Simpan Slot ${slotName}`,
-      });
-
-      refreshQueueCount();
       if (isOnline) {
-        await triggerAutoSync();
+        const { error } = await supabase
+          .from('time_slots')
+          .upsert(recordsToUpsert, { onConflict: 'school_id,day_index,period_number' });
+        if (error) throw error;
+        await fetchAllData();
+        alert(`Berhasil menyimpan slot untuk ${targetDayIndices.length} hari!`);
       } else {
+        const existingFiltered = timeSlots.filter(
+          (s) => !targetDayIndices.includes(s.day_index) || s.period_number !== Number(slotPeriod)
+        );
+        const newLocalSlots = [
+          ...existingFiltered,
+          ...recordsToUpsert.map((r, i) => ({ ...r, id: `local_slot_${r.day_index}_${r.period_number}_${i}` })),
+        ] as TimeSlot[];
+        setTimeSlots(newLocalSlots);
+        updateLocalOfflineCache(schoolId, { timeSlots: newLocalSlots });
+
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'time_slots',
+          operation: 'upsert',
+          matchColumn: 'school_id,day_index,period_number',
+          payload: recordsToUpsert,
+          description: `Simpan Slot ${slotName}`,
+        });
+
+        refreshQueueCount();
         alert('Slot tersimpan offline & antrean sync terdaftar!');
       }
     } catch (err: any) {
-      alert(`Gagal: ${err.message}`);
+      alert(`Gagal menyimpan slot: ${err.message}`);
     } finally {
       setSavingSlot(false);
     }
@@ -787,30 +833,40 @@ export const App: React.FC = () => {
     if (!confirm('Kosongkan semua slot jam dan jadwal?')) return;
 
     setSavingSlot(true);
-    setTimeSlots([]);
-    setSchedules([]);
-    updateLocalOfflineCache(schoolId, { timeSlots: [], schedules: [] });
+    try {
+      if (isOnline) {
+        await supabase.from('schedules').delete().eq('school_id', schoolId);
+        await supabase.from('time_slots').delete().eq('school_id', schoolId);
+        await fetchAllData();
+      } else {
+        setTimeSlots([]);
+        setSchedules([]);
+        updateLocalOfflineCache(schoolId, { timeSlots: [], schedules: [] });
 
-    enqueueSyncAction({
-      school_id: schoolId,
-      table: 'schedules',
-      operation: 'delete',
-      matchColumn: 'school_id',
-      matchValue: schoolId,
-      description: 'Hapus jadwal',
-    });
-    enqueueSyncAction({
-      school_id: schoolId,
-      table: 'time_slots',
-      operation: 'delete',
-      matchColumn: 'school_id',
-      matchValue: schoolId,
-      description: 'Hapus slot',
-    });
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'schedules',
+          operation: 'delete',
+          matchColumn: 'school_id',
+          matchValue: schoolId,
+          description: 'Hapus jadwal',
+        });
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'time_slots',
+          operation: 'delete',
+          matchColumn: 'school_id',
+          matchValue: schoolId,
+          description: 'Hapus slot',
+        });
 
-    refreshQueueCount();
-    if (isOnline) triggerAutoSync();
-    setSavingSlot(false);
+        refreshQueueCount();
+      }
+    } catch (err: any) {
+      alert(`Gagal mengosongkan slot: ${err.message}`);
+    } finally {
+      setSavingSlot(false);
+    }
   };
 
   const handleAddConstraint = async (e: React.FormEvent) => {
@@ -829,27 +885,36 @@ export const App: React.FC = () => {
 
       currentRules.push({ day_index: Number(unavailDayIndex), periods: parsedPeriods, level: 'HARD' });
 
-      const updatedTeachers = teachers.map((t) =>
-        t.id === selectedTeacherId ? { ...t, unavailable_slots: currentRules } : t
-      );
-      setTeachers(updatedTeachers);
-      updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
+      if (isOnline) {
+        const { error } = await supabase
+          .from('teachers')
+          .update({ unavailable_slots: currentRules, updated_at: new Date().toISOString() })
+          .eq('id', selectedTeacherId)
+          .eq('school_id', schoolId);
+        if (error) throw error;
+        await fetchAllData();
+      } else {
+        const updatedTeachers = teachers.map((t) =>
+          t.id === selectedTeacherId ? { ...t, unavailable_slots: currentRules } : t
+        );
+        setTeachers(updatedTeachers);
+        updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
 
-      enqueueSyncAction({
-        school_id: schoolId,
-        table: 'teachers',
-        operation: 'update',
-        matchColumn: 'id',
-        matchValue: selectedTeacherId,
-        expected_version: teacher?.version || 1,
-        payload: { unavailable_slots: currentRules },
-        description: `Syarat jam guru (${selectedTeacherId})`,
-      });
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'teachers',
+          operation: 'update',
+          matchColumn: 'id',
+          matchValue: selectedTeacherId,
+          expected_version: teacher?.version || 1,
+          payload: { unavailable_slots: currentRules },
+          description: `Syarat jam guru (${selectedTeacherId})`,
+        });
 
-      refreshQueueCount();
-      if (isOnline) triggerAutoSync();
+        refreshQueueCount();
+      }
     } catch (err: any) {
-      alert(`Gagal: ${err.message}`);
+      alert(`Gagal menyimpan syarat jam: ${err.message}`);
     } finally {
       setSavingConstraint(false);
     }
@@ -859,24 +924,35 @@ export const App: React.FC = () => {
     const schoolId = session?.user?.id;
     if (!schoolId) return;
 
-    const teacher = teachers.find((t) => t.id === teacherId);
-    const updatedTeachers = teachers.map((t) => (t.id === teacherId ? { ...t, unavailable_slots: [] } : t));
-    setTeachers(updatedTeachers);
-    updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from('teachers')
+          .update({ unavailable_slots: [], updated_at: new Date().toISOString() })
+          .eq('id', teacherId)
+          .eq('school_id', schoolId);
+        if (error) throw error;
+        await fetchAllData();
+      } else {
+        const updatedTeachers = teachers.map((t) => (t.id === teacherId ? { ...t, unavailable_slots: [] } : t));
+        setTeachers(updatedTeachers);
+        updateLocalOfflineCache(schoolId, { teachers: updatedTeachers });
 
-    enqueueSyncAction({
-      school_id: schoolId,
-      table: 'teachers',
-      operation: 'update',
-      matchColumn: 'id',
-      matchValue: teacherId,
-      expected_version: teacher?.version || 1,
-      payload: { unavailable_slots: [] },
-      description: `Reset syarat jam (${teacherId})`,
-    });
+        enqueueSyncAction({
+          school_id: schoolId,
+          table: 'teachers',
+          operation: 'update',
+          matchColumn: 'id',
+          matchValue: teacherId,
+          payload: { unavailable_slots: [] },
+          description: `Reset syarat jam (${teacherId})`,
+        });
 
-    refreshQueueCount();
-    if (isOnline) triggerAutoSync();
+        refreshQueueCount();
+      }
+    } catch (err: any) {
+      alert(`Gagal mereset syarat jam: ${err.message}`);
+    }
   };
 
   const handleTriggerSolver = async () => {
@@ -886,7 +962,7 @@ export const App: React.FC = () => {
     }
 
     if (pendingQueueCount > 0) {
-      alert(`Masih ada ${pendingQueueCount} data lokal belum tersinkron. Silakan tekan tombol sinkronisasi terlebih dahulu agar data cloud mutakhir.`);
+      alert(`Masih ada ${pendingQueueCount} data lokal belum tersinkron. Silakan sinkronkan terlebih dahulu.`);
       return;
     }
 
@@ -905,7 +981,7 @@ export const App: React.FC = () => {
       if (!proceed) return;
     } else {
       const proceed = window.confirm(
-        'Seluruh data guru, keseimbangan jenjang kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan mesin solver Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
+        'Seluruh data guru, keseimbangan jenjang kelas, pola jam, dan slot waktu telah lengkap.\n\nJalankan solver Google OR-Tools di GitHub Actions untuk menyusun jadwal sekolah Anda?'
       );
       if (!proceed) return;
     }
@@ -1374,7 +1450,6 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Tombol Toggle Cetak Grafik Bar (Hanya Relevan Saat Filter Mode Teacher) */}
             {filterMode === 'TEACHER' && (
               <button
                 onClick={() => setShowChartInPrint(!showChartInPrint)}
@@ -1543,7 +1618,7 @@ export const App: React.FC = () => {
       {/* MODAL ADMIN TOKEN */}
       {isAdmin && <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />}
 
-      {/* MODAL MASTER DATA */}
+      {/* MODAL MASTER DATA (DILENGKAPI schoolId) */}
       {session?.user?.id && (
         <MasterDataModal
           isOpen={isMasterModalOpen}
@@ -1557,7 +1632,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL IMPORT EXCEL */}
+      {/* MODAL IMPORT EXCEL (DILENGKAPI schoolId) */}
       {session?.user?.id && (
         <ExcelImportModal
           isOpen={isImportModalOpen}
@@ -1567,7 +1642,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL PENUGASAN GURU */}
+      {/* MODAL PENUGASAN GURU (DILENGKAPI schoolId) */}
       {session?.user?.id && (
         <AssignmentModal
           isOpen={isAssignmentModalOpen}
