@@ -20,10 +20,10 @@ import { Teacher, Subject, ClassRoom, Lesson, CurriculumStructure } from '../typ
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  teachers: Teacher[];
-  subjects: Subject[];
-  classes: ClassRoom[];
-  lessons: Lesson[];
+  teachers?: Teacher[];
+  subjects?: Subject[];
+  classes?: ClassRoom[];
+  lessons?: Lesson[];
   curriculumStructures?: CurriculumStructure[];
   schoolId: string;
   onDataUpdated: () => void;
@@ -32,14 +32,15 @@ interface Props {
 export const AssignmentModal: React.FC<Props> = ({
   isOpen,
   onClose,
-  teachers,
-  subjects,
-  classes,
-  lessons,
+  teachers = [],
+  subjects = [],
+  classes = [],
+  lessons = [],
   curriculumStructures = [],
   schoolId,
   onDataUpdated,
 }) => {
+  // 1. SEMUA HOOK STATE DILETAKKAN DI PALING ATAS
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
@@ -47,16 +48,18 @@ export const AssignmentModal: React.FC<Props> = ({
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
+  // 2. INISIALISASI DEFAULT
   useEffect(() => {
     if (!selectedTeacherId && teachers.length > 0) setSelectedTeacherId(teachers[0].id);
     if (!selectedSubjectId && subjects.length > 0) setSelectedSubjectId(subjects[0].id);
   }, [teachers, subjects, selectedTeacherId, selectedSubjectId]);
 
+  // 3. DATA GURU TERPILIH
   const selectedTeacher = useMemo(() => {
     return teachers.find((t) => t.id === selectedTeacherId);
   }, [teachers, selectedTeacherId]);
 
-  // 1. Analisis Penugasan Guru Saat Ini (Beban JP, Fokus Jenjang, Fokus Mapel)
+  // 4. ANALISIS BEBAN DAN AFINITAS GURU
   const teacherAnalytics = useMemo(() => {
     if (!selectedTeacherId) {
       return {
@@ -80,8 +83,8 @@ export const AssignmentModal: React.FC<Props> = ({
     const activeSubjectIds = new Set<string>();
 
     teacherLessons.forEach((l) => {
-      assignedClassIds.add(l.class_id);
-      activeSubjectIds.add(l.subject_id);
+      if (l.class_id) assignedClassIds.add(l.class_id);
+      if (l.subject_id) activeSubjectIds.add(l.subject_id);
       const cls = classes.find((c) => c.id === l.class_id);
       if (cls?.grade_level) {
         activeGrades.add(cls.grade_level);
@@ -89,7 +92,6 @@ export const AssignmentModal: React.FC<Props> = ({
       }
     });
 
-    // Cari jenjang kelas yang paling banyak diajar oleh guru ini (Dominant Grade)
     let dominantGrade: number | null = null;
     let maxCount = 0;
     gradeCounts.forEach((count, grade) => {
@@ -108,17 +110,17 @@ export const AssignmentModal: React.FC<Props> = ({
     };
   }, [lessons, selectedTeacherId, classes]);
 
-  // 2. Klasifikasi Linieritas Mata Pelajaran
+  // 5. PEMBAGIAN MAPEL LINIER VS LAINNYA
   const { linearSubjects, otherSubjects } = useMemo(() => {
     const eligibleIds = new Set(selectedTeacher?.eligible_subject_ids || []);
     const linear: Subject[] = [];
     const others: Subject[] = [];
+    const teacherMajor = String(selectedTeacher?.major || '').toLowerCase().trim();
 
     subjects.forEach((s) => {
       const isExplicitEligible = eligibleIds.has(s.id);
-      const isMajorMatch =
-        selectedTeacher?.major &&
-        s.subject_name.toLowerCase().includes(selectedTeacher.major.toLowerCase());
+      const subName = String(s.subject_name || '').toLowerCase();
+      const isMajorMatch = teacherMajor.length > 0 && subName.includes(teacherMajor);
 
       if (isExplicitEligible || isMajorMatch) {
         linear.push(s);
@@ -130,16 +132,14 @@ export const AssignmentModal: React.FC<Props> = ({
     return { linearSubjects: linear, otherSubjects: others };
   }, [subjects, selectedTeacher]);
 
-  // Otomatis pilihkan mapel linier pertama saat berganti guru
   useEffect(() => {
     if (linearSubjects.length > 0 && !linearSubjects.some((s) => s.id === selectedSubjectId)) {
       setSelectedSubjectId(linearSubjects[0].id);
     }
   }, [selectedTeacherId, linearSubjects]);
 
-  // 3. Algoritma Rekomendasi Kelas & Deteksi Mapel Pilihan (Tahap 2)
+  // 6. SKOR REKOMENDASI KELAS DENGAN PROTEKSI STRING PADA SORT
   const availableClassesWithScores = useMemo(() => {
-    // Hitung total JP setiap kelas saat ini untuk mendeteksi kelas yang kekurangan jam mapel pilihan
     const classTotalJPMap = new Map<string, number>();
     const gradeMaxJPMap = new Map<number, number>();
 
@@ -159,22 +159,18 @@ export const AssignmentModal: React.FC<Props> = ({
           teacherAnalytics.dominantGrade !== null && cls.grade_level === teacherAnalytics.dominantGrade;
         const isAlreadyTaughtGrade = teacherAnalytics.activeGrades.has(cls.grade_level);
 
-        // Cek apakah mapel yang dipilih sudah ada pengampunya di kelas ini
         const existingLessonInClass = lessons.find(
           (l) => l.class_id === cls.id && l.subject_id === selectedSubjectId
         );
 
-        // Cek apakah kelas ini masih kekurangan jam dibanding kelas sejenjangnya (butuh mapel pilihan)
         const currentClassJP = classTotalJPMap.get(cls.id) || 0;
         const maxGradeJP = gradeMaxJPMap.get(cls.grade_level) || 0;
         const jpDeficit = maxGradeJP - currentClassJP;
 
-        // Cek aturan kurikulum untuk mapel & jenjang ini
         const currRule = curriculumStructures.find(
           (cs) => cs.grade_level === cls.grade_level && cs.subject_id === selectedSubjectId
         );
 
-        // Skor prioritas pengurutan rekomendasi
         let priorityScore = 0;
         if (isSameDominantGrade) priorityScore += 50;
         else if (isAlreadyTaughtGrade) priorityScore += 30;
@@ -192,25 +188,28 @@ export const AssignmentModal: React.FC<Props> = ({
           priorityScore,
         };
       })
-      .sort((a, b) => b.priorityScore - a.priorityScore || a.cls.class_name.localeCompare(b.cls.class_name));
+      .sort((a, b) => {
+        if (b.priorityScore !== a.priorityScore) {
+          return b.priorityScore - a.priorityScore;
+        }
+        return String(a.cls.class_name || '').localeCompare(String(b.cls.class_name || ''));
+      });
   }, [classes, teacherAnalytics, lessons, selectedSubjectId, curriculumStructures]);
 
-  // 4. Peringatan Anti-Fragmentasi (Jika guru mengajar terlalu banyak jenjang / terlalu banyak mapel berbeda)
+  // 7. PERINGATAN FRAGMENTASI
   const fragmentationWarning = useMemo(() => {
     const warnings: string[] = [];
 
-    // Cek jika memilih mapel baru padahal sudah mengajar 2 mapel berbeda
     if (
       selectedSubjectId &&
       teacherAnalytics.activeSubjectIds.size >= 2 &&
       !teacherAnalytics.activeSubjectIds.has(selectedSubjectId)
     ) {
       warnings.push(
-        `Guru ini sudah mengampu ${teacherAnalytics.activeSubjectIds.size} mata pelajaran berbeda. Menambah mapel baru akan memecah fokus persiapan bahan ajar.`
+        `Guru ini sudah mengampu ${teacherAnalytics.activeSubjectIds.size} mata pelajaran berbeda. Menambah mapel baru akan memecah konsentrasi bahan ajar.`
       );
     }
 
-    // Cek jika memilih kelas yang membuat guru mengajar di 3 jenjang berbeda sekaligus
     const previewGrades = new Set(teacherAnalytics.activeGrades);
     selectedClassIds.forEach((cId) => {
       const c = classes.find((item) => item.id === cId);
@@ -219,17 +218,17 @@ export const AssignmentModal: React.FC<Props> = ({
 
     if (previewGrades.size > 2) {
       warnings.push(
-        `Penugasan ini membuat guru mengajar di ${previewGrades.size} tingkat jenjang berbeda (${Array.from(previewGrades)
+        `Penugasan ini menyebabkan guru mengajar di ${previewGrades.size} tingkat jenjang (${Array.from(previewGrades)
           .sort()
           .map((g) => `Kelas ${g}`)
-          .join(', ')}). Disarankan fokus maksimal pada 1–2 jenjang saja.`
+          .join(', ')}). Disarankan fokus maksimal pada 1–2 jenjang.`
       );
     }
 
     return warnings;
   }, [selectedSubjectId, selectedClassIds, teacherAnalytics, classes]);
 
-  // Auto-fill Total JP berdasarkan struktur kurikulum saat mapel atau kelas dipilih
+  // 8. AUTO-FILL TOTAL JP BERDASARKAN KURIKULUM
   useEffect(() => {
     if (!selectedSubjectId) return;
 
@@ -249,6 +248,16 @@ export const AssignmentModal: React.FC<Props> = ({
     }
   }, [selectedSubjectId, selectedClassIds, classes, curriculumStructures, teacherAnalytics.dominantGrade]);
 
+  // 9. INFO MAPEL PILIHAN
+  const currentSubjectElectiveInfo = useMemo(() => {
+    return curriculumStructures.find(
+      (cs) => cs.subject_id === selectedSubjectId && cs.is_compulsory === false
+    );
+  }, [curriculumStructures, selectedSubjectId]);
+
+  // =========================================================================
+  // SELURUH HOOK DI ATAS SUDAH TUNTAS. BARU JALANKAN EARLY RETURN DI SINI:
+  // =========================================================================
   if (!isOpen) return null;
 
   const handleTeacherChange = (teacherId: string) => {
@@ -262,7 +271,6 @@ export const AssignmentModal: React.FC<Props> = ({
     );
   };
 
-  // Pilih otomatis hanya kelas pada jenjang yang direkomendasikan (Fokus 1 Jenjang)
   const handleSelectRecommendedGradeClasses = () => {
     const targetGrade =
       teacherAnalytics.dominantGrade ||
@@ -366,13 +374,6 @@ export const AssignmentModal: React.FC<Props> = ({
     }
   };
 
-  // Cek apakah mapel yang dipilih merupakan mapel Pilihan/Peminatan pada kurikulum
-  const currentSubjectElectiveInfo = useMemo(() => {
-    return curriculumStructures.find(
-      (cs) => cs.subject_id === selectedSubjectId && cs.is_compulsory === false
-    );
-  }, [curriculumStructures, selectedSubjectId]);
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh]">
@@ -443,7 +444,7 @@ export const AssignmentModal: React.FC<Props> = ({
                 </div>
               </div>
 
-              {/* 2. Pilih Mata Pelajaran (Dikelompokkan Linieritas) */}
+              {/* 2. Pilih Mata Pelajaran */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
                   <span>Mata Pelajaran</span>
@@ -484,7 +485,7 @@ export const AssignmentModal: React.FC<Props> = ({
                   <div className="mt-1.5 p-2 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-900 flex items-start gap-1.5">
                     <Compass className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                     <span>
-                      <strong>Mapel Pilihan/Peminatan:</strong> Tidak wajib ada di seluruh kelas pada jenjang Kelas {currentSubjectElectiveInfo.grade_level}. Pilih hanya kelas rombel peminatan terkait.
+                      <strong>Mapel Pilihan/Peminatan:</strong> Tidak wajib di semua kelas jenjang {currentSubjectElectiveInfo.grade_level}. Alokasikan pada kelas peminatan terkait.
                     </span>
                   </div>
                 )}
@@ -506,14 +507,14 @@ export const AssignmentModal: React.FC<Props> = ({
                 />
                 {selectedClassIds.length > 0 && (
                   <p className="text-[10px] text-slate-500 mt-1.5 text-center">
-                    Tambahan beban: <strong>+{selectedClassIds.length * totalPeriods} JP</strong> (Total menjadi{' '}
+                    Tambahan beban: <strong>+{selectedClassIds.length * totalPeriods} JP</strong> (Total{' '}
                     <strong>{teacherAnalytics.totalJP + selectedClassIds.length * totalPeriods} JP</strong>)
                   </p>
                 )}
               </div>
             </div>
 
-            {/* Peringatan Anti-Fragmentasi (Jika mengajar terlalu banyak jenjang/mapel) */}
+            {/* Peringatan Anti-Fragmentasi */}
             {fragmentationWarning.length > 0 && (
               <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-1">
                 {fragmentationWarning.map((warn, i) => (
@@ -525,7 +526,7 @@ export const AssignmentModal: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Pilihan Kelas dengan Rekomendasi Pintar */}
+            {/* Pilihan Kelas */}
             <div className="pt-2 border-t border-slate-200">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                 <div>
@@ -533,7 +534,7 @@ export const AssignmentModal: React.FC<Props> = ({
                     Tugaskan ke Kelas (Diurutkan Berdasarkan Rekomendasi Fokus Jenjang):
                   </label>
                   <span className="text-[10px] text-slate-500">
-                    Tersedia {availableClassesWithScores.length} kelas yang belum diajar oleh guru ini
+                    Tersedia {availableClassesWithScores.length} kelas yang belum diajar guru ini
                   </span>
                 </div>
 
