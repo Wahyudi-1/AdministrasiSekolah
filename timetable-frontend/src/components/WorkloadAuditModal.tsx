@@ -31,7 +31,7 @@ export const WorkloadAuditModal: React.FC<Props> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'TEACHERS' | 'CLASSES'>('TEACHERS');
 
-  // 1. Audit Jam Mengajar Guru
+  // 1. Audit Jam Mengajar Guru (Sinkron dengan AssignmentModal)
   const teacherAudits = useMemo(() => {
     return teachers.map((tch) => {
       const assignedLessons = lessons.filter((l) => l.teacher_id === tch.id);
@@ -209,7 +209,7 @@ export const WorkloadAuditModal: React.FC<Props> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 text-xs">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header Modal */}
-        <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <div className="p-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
             <Scale className="w-5 h-5 text-indigo-400" />
             <div>
@@ -239,12 +239,12 @@ export const WorkloadAuditModal: React.FC<Props> = ({
         </div>
 
         {/* Tab Navigasi */}
-        <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-2 gap-3 font-bold">
+        <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-2 gap-3 font-bold shrink-0">
           <button
             onClick={() => setActiveTab('TEACHERS')}
             className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition ${
               activeTab === 'TEACHERS'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -255,7 +255,7 @@ export const WorkloadAuditModal: React.FC<Props> = ({
             onClick={() => setActiveTab('CLASSES')}
             className={`flex items-center gap-2 py-2.5 px-4 border-b-2 transition ${
               activeTab === 'CLASSES'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -394,7 +394,7 @@ export const WorkloadAuditModal: React.FC<Props> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+        <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
           <span className="text-[11px] text-slate-500">
             * Gunakan tombol Ekspor Laporan di kanan atas untuk mengunduh rincian lengkap ke Excel.
           </span>
