@@ -61,6 +61,7 @@ import {
   Subject,
   Lesson,
   ScheduleItem,
+  CurriculumStructure,
 } from './types';
 
 const ADMIN_EMAILS = ['joedie.meyson@gmail.com'];
@@ -93,6 +94,7 @@ export const App: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
+  const [curriculumStructures, setCurriculumStructures] = useState<CurriculumStructure[]>([]);
 
   // State Filter, Navigasi Matriks & Toggle Cetak Grafik Bar
   const [filterMode, setFilterMode] = useState<'CLASS' | 'TEACHER'>('CLASS');
@@ -281,6 +283,7 @@ export const App: React.FC = () => {
         setSubjects([]);
         setLessons([]);
         setSchedules([]);
+        setCurriculumStructures([]);
         setSchoolProfile(null);
         setPendingQueueCount(0);
       }
@@ -319,6 +322,7 @@ export const App: React.FC = () => {
           if (parsed.subjects) setSubjects(parsed.subjects);
           if (parsed.lessons) setLessons(parsed.lessons);
           if (parsed.schedules) setSchedules(parsed.schedules);
+          if (parsed.curriculumStructures) setCurriculumStructures(parsed.curriculumStructures);
           if (parsed.schoolProfile) setSchoolProfile(parsed.schoolProfile);
         }
       } catch (err) {
@@ -338,6 +342,8 @@ export const App: React.FC = () => {
         subjectsRes,
         lessonsRes,
         schedulesRes,
+        curriculumRes,
+        eligibleRes,
       ] = await Promise.all([
         supabase.from('schools').select('*').eq('id', schoolId).maybeSingle(),
         supabase.from('work_days').select('*').eq('school_id', schoolId).order('day_index'),
@@ -348,6 +354,8 @@ export const App: React.FC = () => {
         supabase.from('subjects').select('*').eq('school_id', schoolId).order('subject_name'),
         supabase.from('lessons').select('*').eq('school_id', schoolId),
         supabase.from('schedules').select('*').eq('school_id', schoolId),
+        supabase.from('curriculum_structures').select('*').eq('school_id', schoolId),
+        supabase.from('teacher_eligible_subjects').select('*').eq('school_id', schoolId),
       ]);
 
       let loadedWorkDays = daysRes.data || [];
@@ -367,10 +375,27 @@ export const App: React.FC = () => {
       if (profileRes.data) setSchoolProfile(profileRes.data);
       setWorkDays(loadedWorkDays);
       if (slotsRes.data) setTimeSlots(slotsRes.data);
+
+      // Sinkronkan daftar mapel linier ke dalam objek guru
       if (teachersRes.data) {
-        setTeachers(teachersRes.data);
-        if (!selectedTeacherId && teachersRes.data.length > 0) setSelectedTeacherId(teachersRes.data[0].id);
+        const eligibleMap = new Map<string, string[]>();
+        (eligibleRes.data || []).forEach((row: any) => {
+          const list = eligibleMap.get(row.teacher_id) || [];
+          list.push(row.subject_id);
+          eligibleMap.set(row.teacher_id, list);
+        });
+
+        const mappedTeachers: Teacher[] = teachersRes.data.map((t: Teacher) => ({
+          ...t,
+          eligible_subject_ids: eligibleMap.get(t.id) || [],
+        }));
+
+        setTeachers(mappedTeachers);
+        if (!selectedTeacherId && mappedTeachers.length > 0) {
+          setSelectedTeacherId(mappedTeachers[0].id);
+        }
       }
+
       if (classesRes.data) {
         setClasses(classesRes.data);
         if (!selectedId && classesRes.data.length > 0 && filterMode === 'CLASS') {
@@ -381,6 +406,7 @@ export const App: React.FC = () => {
       if (subjectsRes.data) setSubjects(subjectsRes.data);
       if (lessonsRes.data) setLessons(lessonsRes.data);
       if (schedulesRes.data) setSchedules(schedulesRes.data);
+      if (curriculumRes.data) setCurriculumStructures(curriculumRes.data);
 
       updateLocalOfflineCache(schoolId, {
         workDays: loadedWorkDays,
@@ -391,6 +417,7 @@ export const App: React.FC = () => {
         subjects: subjectsRes.data || [],
         lessons: lessonsRes.data || [],
         schedules: schedulesRes.data || [],
+        curriculumStructures: curriculumRes.data || [],
         schoolProfile: profileRes.data || null,
       });
     } catch (err: any) {
@@ -612,7 +639,6 @@ export const App: React.FC = () => {
 
     try {
       if (isOnline) {
-        // Mode Online: langsung eksekusi ke Supabase cloud
         const targetLessonIds = lessons
           .filter((l) => configTargetClassIds.includes(l.class_id) && l.teacher_id === tId && l.subject_id === sId)
           .map((l) => l.id);
@@ -635,7 +661,6 @@ export const App: React.FC = () => {
         await fetchAllData();
         alert(`Berhasil memperbarui kartu pelajaran untuk ${targetLessonIds.length} kelas di cloud!`);
       } else {
-        // Mode Offline: simpan ke state lokal & antrean offline
         const updatedLessons = lessons.map((l) => {
           if (configTargetClassIds.includes(l.class_id) && l.teacher_id === tId && l.subject_id === sId) {
             return {
@@ -1618,7 +1643,7 @@ export const App: React.FC = () => {
       {/* MODAL ADMIN TOKEN */}
       {isAdmin && <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />}
 
-      {/* MODAL MASTER DATA (DILENGKAPI schoolId) */}
+      {/* MODAL MASTER DATA */}
       {session?.user?.id && (
         <MasterDataModal
           isOpen={isMasterModalOpen}
@@ -1632,7 +1657,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL IMPORT EXCEL (DILENGKAPI schoolId) */}
+      {/* MODAL IMPORT EXCEL */}
       {session?.user?.id && (
         <ExcelImportModal
           isOpen={isImportModalOpen}
@@ -1642,7 +1667,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL PENUGASAN GURU (DILENGKAPI schoolId) */}
+      {/* MODAL PENUGASAN GURU (DENGAN REKOMENDASI LINIERITAS & AUTO-FILL KURIKULUM) */}
       {session?.user?.id && (
         <AssignmentModal
           isOpen={isAssignmentModalOpen}
@@ -1651,6 +1676,7 @@ export const App: React.FC = () => {
           subjects={subjects}
           classes={classes}
           lessons={lessons}
+          curriculumStructures={curriculumStructures}
           schoolId={session.user.id}
           onDataUpdated={fetchAllData}
         />
@@ -1710,7 +1736,7 @@ export const App: React.FC = () => {
                           }
                           className={`px-3 py-1.5 rounded-lg font-bold border transition flex items-center gap-1.5 ${
                             isChecked
-                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                               : 'bg-white text-slate-600 border-slate-300'
                           }`}
                         >
