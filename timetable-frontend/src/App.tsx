@@ -85,7 +85,7 @@ export const App: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<string>('');
 
-  // State Master Data & Jadwal
+  // State Master Data, Kurikulum & Jadwal
   const [workDays, setWorkDays] = useState<WorkDay[]>([]);
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -1295,7 +1295,7 @@ export const App: React.FC = () => {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition shadow-sm"
             >
               <Database className="w-4 h-4 text-emerald-600" />
-              <span>Master Data</span>
+              <span>Master Data & Kurikulum</span>
             </button>
 
             <button
@@ -1643,7 +1643,7 @@ export const App: React.FC = () => {
       {/* MODAL ADMIN TOKEN */}
       {isAdmin && <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />}
 
-      {/* MODAL MASTER DATA */}
+      {/* MODAL MASTER DATA (LENGKAP DENGAN KURIKULUM & SCHOOL_ID) */}
       {session?.user?.id && (
         <MasterDataModal
           isOpen={isMasterModalOpen}
@@ -1652,12 +1652,13 @@ export const App: React.FC = () => {
           subjects={subjects}
           classes={classes}
           rooms={rooms}
+          curriculumStructures={curriculumStructures}
           schoolId={session.user.id}
           onDataUpdated={fetchAllData}
         />
       )}
 
-      {/* MODAL IMPORT EXCEL */}
+      {/* MODAL IMPORT EXCEL (LENGKAP DENGAN 4 SHEET & SCHOOL_ID) */}
       {session?.user?.id && (
         <ExcelImportModal
           isOpen={isImportModalOpen}
@@ -1667,7 +1668,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL PENUGASAN GURU (DENGAN REKOMENDASI LINIERITAS & AUTO-FILL KURIKULUM) */}
+      {/* MODAL PENUGASAN GURU (CERDAS DENGAN LINIERITAS, AUTO-KURIKULUM & FOKUS JENJANG) */}
       {session?.user?.id && (
         <AssignmentModal
           isOpen={isAssignmentModalOpen}
