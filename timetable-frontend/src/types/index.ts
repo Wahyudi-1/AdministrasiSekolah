@@ -36,9 +36,12 @@ export interface Teacher {
   school_id?: string;
   teacher_code: string;
   full_name: string;
+  education_degree?: string; // Jenjang (contoh: S1, S2)
+  major?: string;            // Jurusan ijazah (contoh: Pendidikan Fisika)
+  eligible_subject_ids?: string[]; // Daftar ID mapel linier
   max_periods_per_day: number;
   max_consecutive_periods?: number;
-  max_idle_gap_per_day?: number; // <-- TAMBAHKAN BARIS INI
+  max_idle_gap_per_day?: number;
   disallow_full_day?: boolean;
   min_periods_per_week?: number;
   unavailable_slots: UnavailableRule[];
@@ -67,6 +70,16 @@ export interface Subject {
   subject_code: string;
   subject_name: string;
   is_heavy_subject?: boolean;
+}
+
+// Struktur kurikulum baku per jenjang
+export interface CurriculumStructure {
+  id: string;
+  school_id?: string;
+  grade_level: number;
+  subject_id: string;
+  default_periods: number;
+  is_compulsory?: boolean;
 }
 
 export interface Lesson {
