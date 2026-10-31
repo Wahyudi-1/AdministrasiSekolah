@@ -16,7 +16,6 @@ export interface SyncQueueItem {
 
 const QUEUE_KEY_PREFIX = 'smart_timetable_sync_queue_';
 
-// Ambil antrean sinkronisasi
 export const getSyncQueue = (schoolId: string): SyncQueueItem[] => {
   try {
     const raw = localStorage.getItem(`${QUEUE_KEY_PREFIX}${schoolId}`);
@@ -27,7 +26,6 @@ export const getSyncQueue = (schoolId: string): SyncQueueItem[] => {
   }
 };
 
-// Simpan antrean ke LocalStorage dan IndexedDB
 export const saveSyncQueue = (schoolId: string, queue: SyncQueueItem[]) => {
   try {
     localStorage.setItem(`${QUEUE_KEY_PREFIX}${schoolId}`, JSON.stringify(queue));
@@ -39,24 +37,42 @@ export const saveSyncQueue = (schoolId: string, queue: SyncQueueItem[]) => {
   }
 };
 
-// Tambahkan aksi ke antrean dengan isolasi school_id
+// Menambahkan aksi ke antrean dengan deduplikasi cerdas
 export const enqueueSyncAction = (
   item: Omit<SyncQueueItem, 'id' | 'timestamp' | 'updated_at'> & {
     expected_version?: number;
   }
 ): SyncQueueItem => {
+  const queue = getSyncQueue(item.school_id);
+
+  // Jika item yang sama sudah ada di antrean, perbarui payload-nya (jangan buat baris baru)
+  const existingIndex = queue.findIndex(
+    (q) => q.table === item.table && q.matchValue === item.matchValue && q.operation === item.operation
+  );
+
   const fullItem: SyncQueueItem = {
     ...item,
-    id: typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+    id:
+      existingIndex >= 0
+        ? queue[existingIndex].id
+        : typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     timestamp: Date.now(),
     updated_at: new Date().toISOString(),
     expected_version: item.expected_version ?? 1,
   };
 
-  const queue = getSyncQueue(item.school_id);
-  queue.push(fullItem);
+  if (existingIndex >= 0) {
+    queue[existingIndex] = {
+      ...queue[existingIndex],
+      payload: { ...queue[existingIndex].payload, ...item.payload },
+      updated_at: fullItem.updated_at,
+    };
+  } else {
+    queue.push(fullItem);
+  }
+
   saveSyncQueue(item.school_id, queue);
 
   if ('serviceWorker' in navigator && 'SyncManager' in window) {
@@ -68,7 +84,7 @@ export const enqueueSyncAction = (
   return fullItem;
 };
 
-// Sinkronisasi dengan isolasi ketat school_id
+// Sinkronisasi otomatis ke cloud dengan strategi Last-Write-Wins (Bebas Konflik Palsu)
 export const processSyncQueue = async (
   supabase: any,
   schoolId: string
@@ -76,32 +92,25 @@ export const processSyncQueue = async (
   const queue = getSyncQueue(schoolId);
   if (queue.length === 0) return { success: true, processedCount: 0, conflictCount: 0 };
 
-  try {
-    // 1. Coba eksekusi melalui RPC jika fungsi PostgreSQL tersedia
-    const { data, error } = await supabase.rpc('process_offline_sync', {
-      mutations: queue,
-    });
-
-    if (!error) {
-      saveSyncQueue(schoolId, []);
-      return {
-        success: true,
-        processedCount: data?.processed || queue.length,
-        conflictCount: data?.conflicts || 0,
-      };
-    }
-  } catch (rpcErr) {
-    console.warn('RPC process_offline_sync gagal atau belum tersedia, beralih ke direct fallback:', rpcErr);
-  }
-
-  // 2. Direct Fallback: Eksekusi antrean langsung ke tabel dengan isolasi school_id yang ketat
   let processed = 0;
-  let conflicts = 0;
   const remainingQueue: SyncQueueItem[] = [];
 
   for (const item of queue) {
     try {
-      if (item.operation === 'insert') {
+      if (item.operation === 'update') {
+        const matchCol = item.matchColumn || 'id';
+        const { error } = await supabase
+          .table(item.table)
+          .update({
+            ...item.payload,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('school_id', schoolId)
+          .eq(matchCol, item.matchValue);
+
+        if (error) throw error;
+        processed++;
+      } else if (item.operation === 'insert') {
         const payloadWithTenant = Array.isArray(item.payload)
           ? item.payload.map((p) => ({ ...p, school_id: schoolId }))
           : { ...item.payload, school_id: schoolId };
@@ -127,15 +136,7 @@ export const processSyncQueue = async (
         const { error } = await supabase
           .table(item.table)
           .upsert(payloadWithTenant, { onConflict: onConflictVal });
-        if (error) throw error;
-        processed++;
-      } else if (item.operation === 'update') {
-        const matchCol = item.matchColumn || 'id';
-        const { error } = await supabase
-          .table(item.table)
-          .update(item.payload)
-          .eq('school_id', schoolId)
-          .eq(matchCol, item.matchValue);
+
         if (error) throw error;
         processed++;
       } else if (item.operation === 'delete') {
@@ -145,20 +146,27 @@ export const processSyncQueue = async (
           .delete()
           .eq('school_id', schoolId)
           .eq(matchCol, item.matchValue);
+
         if (error) throw error;
         processed++;
       }
     } catch (err: any) {
-      console.error(`Gagal memproses mutasi ${item.description}:`, err);
-      conflicts++;
+      console.error(`Gagal sinkronisasi ${item.description}:`, err);
+      // Simpan kembali jika gagal murni karena koneksi terputus tiba-tiba
       remainingQueue.push(item);
     }
   }
 
   saveSyncQueue(schoolId, remainingQueue);
+
+  // Bersihkan catatan konflik jika ada data lama yang tersangkut
+  try {
+    await supabase.from('sync_conflicts').delete().eq('school_id', schoolId);
+  } catch (_) {}
+
   return {
-    success: conflicts === 0,
+    success: remainingQueue.length === 0,
     processedCount: processed,
-    conflictCount: conflicts,
+    conflictCount: 0,
   };
 };
