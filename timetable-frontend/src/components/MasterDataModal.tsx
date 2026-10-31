@@ -32,7 +32,7 @@ interface Props {
   onDataUpdated: () => void;
 }
 
-type TabType = 'TEACHER' | 'SUBJECT' | 'CLASS' | 'ROOM' | 'CURRICULUM';
+type TabType = 'SUBJECT' | 'CURRICULUM' | 'TEACHER' | 'CLASS' | 'ROOM';
 
 export const MasterDataModal: React.FC<Props> = ({
   isOpen,
@@ -45,23 +45,29 @@ export const MasterDataModal: React.FC<Props> = ({
   schoolId,
   onDataUpdated,
 }) => {
-  const [activeTab, setActiveTab] = useState<TabType>('TEACHER');
+  // Tab default dimulai dari Mata Pelajaran atau Standar JP
+  const [activeTab, setActiveTab] = useState<TabType>('SUBJECT');
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // State Form & Edit - Guru (+ Pendidikan & Linieritas)
+  // State Form & Edit - Guru (+ Pendidikan & Linieritas, Maks JP otomatis default 8)
   const [editingTeacherId, setEditingTeacherId] = useState<string | null>(null);
   const [teacherCode, setTeacherCode] = useState('');
   const [fullName, setFullName] = useState('');
   const [educationDegree, setEducationDegree] = useState('S1');
   const [major, setMajor] = useState('');
   const [eligibleSubjectIds, setEligibleSubjectIds] = useState<string[]>([]);
-  const [maxPeriods, setMaxPeriods] = useState<number>(8);
 
   // State Form & Edit - Mapel
   const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
   const [subjectCode, setSubjectCode] = useState('');
   const [subjectName, setSubjectName] = useState('');
+
+  // State Form - Struktur Kurikulum per Jenjang
+  const [currGradeLevel, setCurrGradeLevel] = useState<number>(10);
+  const [currSubjectId, setCurrSubjectId] = useState<string>('');
+  const [currDefaultPeriods, setCurrDefaultPeriods] = useState<number>(4);
+  const [currIsCompulsory, setCurrIsCompulsory] = useState<boolean>(true);
 
   // State Form & Edit - Kelas
   const [editingClassId, setEditingClassId] = useState<string | null>(null);
@@ -73,12 +79,6 @@ export const MasterDataModal: React.FC<Props> = ({
   const [roomName, setRoomName] = useState('');
   const [roomType, setRoomType] = useState('LAB');
 
-  // State Form - Struktur Kurikulum per Jenjang
-  const [currGradeLevel, setCurrGradeLevel] = useState<number>(10);
-  const [currSubjectId, setCurrSubjectId] = useState<string>('');
-  const [currDefaultPeriods, setCurrDefaultPeriods] = useState<number>(4);
-  const [currIsCompulsory, setCurrIsCompulsory] = useState<boolean>(true);
-
   if (!isOpen) return null;
 
   const resetForms = () => {
@@ -88,7 +88,6 @@ export const MasterDataModal: React.FC<Props> = ({
     setEducationDegree('S1');
     setMajor('');
     setEligibleSubjectIds([]);
-    setMaxPeriods(8);
 
     setEditingSubjectId(null);
     setSubjectCode('');
@@ -119,7 +118,6 @@ export const MasterDataModal: React.FC<Props> = ({
     setEducationDegree(t.education_degree || 'S1');
     setMajor(t.major || '');
     setEligibleSubjectIds(t.eligible_subject_ids || []);
-    setMaxPeriods(t.max_periods_per_day);
     setErrorMsg('');
   };
 
@@ -140,7 +138,6 @@ export const MasterDataModal: React.FC<Props> = ({
             full_name: fullName.trim(),
             education_degree: educationDegree.trim(),
             major: major.trim(),
-            max_periods_per_day: Number(maxPeriods),
           })
           .eq('id', editingTeacherId)
           .eq('school_id', schoolId);
@@ -155,7 +152,7 @@ export const MasterDataModal: React.FC<Props> = ({
               full_name: fullName.trim(),
               education_degree: educationDegree.trim(),
               major: major.trim(),
-              max_periods_per_day: Number(maxPeriods),
+              max_periods_per_day: 8, // Default aman, diatur lanjut di Kebijakan Guru
               unavailable_slots: [],
             },
           ])
@@ -234,6 +231,39 @@ export const MasterDataModal: React.FC<Props> = ({
       onDataUpdated();
     } catch (err: any) {
       setErrorMsg(`Gagal menyimpan data mapel: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- HANDLER STRUKTUR KURIKULUM ---
+  const handleSubmitCurriculum = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetSubId = currSubjectId || subjects[0]?.id;
+    if (!targetSubId) {
+      setErrorMsg('Pilih mata pelajaran terlebih dahulu.');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      const { error } = await supabase.from('curriculum_structures').upsert(
+        [
+          {
+            school_id: schoolId,
+            grade_level: Number(currGradeLevel),
+            subject_id: targetSubId,
+            default_periods: Number(currDefaultPeriods),
+            is_compulsory: Boolean(currIsCompulsory),
+          },
+        ],
+        { onConflict: 'school_id,grade_level,subject_id' }
+      );
+      if (error) throw error;
+      onDataUpdated();
+    } catch (err: any) {
+      setErrorMsg(`Gagal menyimpan standar kurikulum: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -327,39 +357,6 @@ export const MasterDataModal: React.FC<Props> = ({
     }
   };
 
-  // --- HANDLER STRUKTUR KURIKULUM ---
-  const handleSubmitCurriculum = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const targetSubId = currSubjectId || subjects[0]?.id;
-    if (!targetSubId) {
-      setErrorMsg('Pilih mata pelajaran terlebih dahulu.');
-      return;
-    }
-
-    setLoading(true);
-    setErrorMsg('');
-    try {
-      const { error } = await supabase.from('curriculum_structures').upsert(
-        [
-          {
-            school_id: schoolId,
-            grade_level: Number(currGradeLevel),
-            subject_id: targetSubId,
-            default_periods: Number(currDefaultPeriods),
-            is_compulsory: Boolean(currIsCompulsory),
-          },
-        ],
-        { onConflict: 'school_id,grade_level,subject_id' }
-      );
-      if (error) throw error;
-      onDataUpdated();
-    } catch (err: any) {
-      setErrorMsg(`Gagal menyimpan struktur kurikulum: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // --- HANDLER HAPUS SATUAN ---
   const handleDelete = async (
     table: 'teachers' | 'subjects' | 'classes' | 'rooms' | 'curriculum_structures',
@@ -423,7 +420,7 @@ export const MasterDataModal: React.FC<Props> = ({
           <div>
             <h2 className="text-base font-bold">Kelola Data Master & Struktur Kurikulum</h2>
             <p className="text-xs text-slate-400">
-              Atur Guru (beserta Ijazah & Linieritas Mapel), Mapel, Standar JP Kurikulum per Jenjang, Kelas, dan Ruangan
+              Alur pengisian terstruktur: Mapel &rarr; Standar JP Kurikulum &rarr; Guru & Linieritas &rarr; Kelas &rarr; Ruangan
             </p>
           </div>
           <button
@@ -437,21 +434,8 @@ export const MasterDataModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Tab Navigasi */}
+        {/* Tab Navigasi (Urutan Baru: Mapel -> Standar JP Jenjang -> Guru & Linieritas -> Kelas -> Ruangan) */}
         <div className="flex border-b border-slate-200 bg-slate-50 px-4 pt-2 gap-1.5 text-xs font-semibold overflow-x-auto shrink-0">
-          <button
-            onClick={() => {
-              setActiveTab('TEACHER');
-              resetForms();
-            }}
-            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
-              activeTab === 'TEACHER'
-                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Users className="w-4 h-4" /> Guru & Linieritas ({teachers.length})
-          </button>
           <button
             onClick={() => {
               setActiveTab('SUBJECT');
@@ -463,8 +447,9 @@ export const MasterDataModal: React.FC<Props> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <BookOpen className="w-4 h-4" /> Mata Pelajaran ({subjects.length})
+            <BookOpen className="w-4 h-4" /> 1. Mata Pelajaran ({subjects.length})
           </button>
+
           <button
             onClick={() => {
               setActiveTab('CURRICULUM');
@@ -477,8 +462,23 @@ export const MasterDataModal: React.FC<Props> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <Layers className="w-4 h-4 text-emerald-600" /> Standar JP Jenjang ({curriculumStructures.length})
+            <Layers className="w-4 h-4 text-emerald-600" /> 2. Standar JP Jenjang ({curriculumStructures.length})
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('TEACHER');
+              resetForms();
+            }}
+            className={`flex items-center gap-1.5 py-2.5 px-3.5 border-b-2 transition whitespace-nowrap ${
+              activeTab === 'TEACHER'
+                ? 'border-indigo-600 text-indigo-700 bg-white rounded-t-lg shadow-sm font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Users className="w-4 h-4" /> 3. Guru & Linieritas ({teachers.length})
+          </button>
+
           <button
             onClick={() => {
               setActiveTab('CLASS');
@@ -490,8 +490,9 @@ export const MasterDataModal: React.FC<Props> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <School className="w-4 h-4" /> Kelas ({classes.length})
+            <School className="w-4 h-4" /> 4. Kelas ({classes.length})
           </button>
+
           <button
             onClick={() => {
               setActiveTab('ROOM');
@@ -503,7 +504,7 @@ export const MasterDataModal: React.FC<Props> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <Building2 className="w-4 h-4" /> Ruangan ({rooms.length})
+            <Building2 className="w-4 h-4" /> 5. Ruangan ({rooms.length})
           </button>
         </div>
 
@@ -517,230 +518,7 @@ export const MasterDataModal: React.FC<Props> = ({
 
         {/* Konten Tab */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1 text-sm">
-          {/* TAB 1: GURU + PENDIDIKAN & LINIERITAS */}
-          {activeTab === 'TEACHER' && (
-            <div className="space-y-4">
-              <form
-                onSubmit={handleSubmitTeacher}
-                className={`p-4 rounded-xl border space-y-3.5 transition ${
-                  editingTeacherId ? 'bg-amber-50/70 border-amber-300' : 'bg-slate-50 border-slate-200'
-                }`}
-              >
-                <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Kode Guru*</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="G01"
-                      value={teacherCode}
-                      onChange={(e) => setTeacherCode(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs uppercase bg-white font-bold"
-                    />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Lengkap & Gelar*</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Contoh: Drs. Ahmad Fauzi, M.Pd."
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Jenjang Ijazah</label>
-                    <select
-                      value={educationDegree}
-                      onChange={(e) => setEducationDegree(e.target.value)}
-                      className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-white font-semibold"
-                    >
-                      <option value="S1">S1 / D4</option>
-                      <option value="S2">S2 (Magister)</option>
-                      <option value="S3">S3 (Doktor)</option>
-                      <option value="D3">D3</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Prodi / Jurusan Pendidikan</label>
-                    <input
-                      type="text"
-                      placeholder="Contoh: Pend. Fisika"
-                      value={major}
-                      onChange={(e) => setMajor(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Maks JP/Hari</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={14}
-                      value={maxPeriods}
-                      onChange={(e) => setMaxPeriods(Number(e.target.value))}
-                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white text-center font-bold"
-                    />
-                  </div>
-                </div>
-
-                {/* Pemilih Linieritas Mata Pelajaran */}
-                <div className="pt-2 border-t border-slate-200">
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-                    <GraduationCap className="w-4 h-4 text-indigo-600" />
-                    <span>Mata Pelajaran yang Diizinkan / Linier Sesuai Sertifikasi & Ijazah:</span>
-                  </label>
-                  {subjects.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1">
-                      {subjects.map((sub) => {
-                        const isSelected = eligibleSubjectIds.includes(sub.id);
-                        return (
-                          <button
-                            key={sub.id}
-                            type="button"
-                            onClick={() => handleToggleEligibleSubject(sub.id)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1 ${
-                              isSelected
-                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
-                                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
-                            }`}
-                          >
-                            {isSelected ? (
-                              <CheckSquare className="w-3 h-3" />
-                            ) : (
-                              <Square className="w-3 h-3 opacity-40" />
-                            )}
-                            <span>{sub.subject_name} ({sub.subject_code})</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-slate-400 italic">
-                      Tambahkan data Mata Pelajaran terlebih dahulu pada tab Mata Pelajaran.
-                    </p>
-                  )}
-                </div>
-
-                <div className="flex justify-end gap-2 pt-1">
-                  {editingTeacherId && (
-                    <button
-                      type="button"
-                      onClick={resetForms}
-                      className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold"
-                    >
-                      Batal Edit
-                    </button>
-                  )}
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 text-white transition shadow-sm ${
-                      editingTeacherId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
-                    }`}
-                  >
-                    {editingTeacherId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                    <span>{editingTeacherId ? 'Simpan Perubahan Guru' : 'Tambah Guru & Linieritas'}</span>
-                  </button>
-                </div>
-              </form>
-
-              <div className="flex items-center justify-between pt-1">
-                <span className="font-bold text-slate-700 text-xs">Daftar Guru & Kualifikasi ({teachers.length})</span>
-                {teachers.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => handleResetAllCategory('teachers', 'Guru')}
-                    disabled={loading}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
-                    <span>Kosongkan Semua Guru</span>
-                  </button>
-                )}
-              </div>
-
-              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[300px] overflow-y-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-                    <tr>
-                      <th className="p-2.5 w-16 text-center bg-slate-100">Kode</th>
-                      <th className="p-2.5 bg-slate-100">Nama Guru & Pendidikan</th>
-                      <th className="p-2.5 bg-slate-100">Mapel Linier Diizinkan</th>
-                      <th className="p-2.5 w-24 text-center bg-slate-100">Maks/Hari</th>
-                      <th className="p-2.5 w-20 text-center bg-slate-100">Aksi</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {teachers.map((t) => {
-                      const eligibleSubs = subjects.filter((s) =>
-                        (t.eligible_subject_ids || []).includes(s.id)
-                      );
-                      return (
-                        <tr
-                          key={t.id}
-                          className={`transition ${
-                            editingTeacherId === t.id ? 'bg-amber-50' : 'hover:bg-slate-50/80'
-                          }`}
-                        >
-                          <td className="p-2.5 text-center font-mono font-bold text-slate-600">{t.teacher_code}</td>
-                          <td className="p-2.5">
-                            <p className="font-bold text-slate-800">{t.full_name}</p>
-                            <span className="text-[10px] text-slate-500 font-medium">
-                              {t.education_degree || 'S1'} — {t.major || 'Belum diisi'}
-                            </span>
-                          </td>
-                          <td className="p-2.5">
-                            {eligibleSubs.length > 0 ? (
-                              <div className="flex flex-wrap gap-1">
-                                {eligibleSubs.map((sub) => (
-                                  <span
-                                    key={sub.id}
-                                    className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded text-[10px] font-bold"
-                                  >
-                                    {sub.subject_name}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-[10px] text-slate-400 italic">Semua / Otomatis Nama Jurusan</span>
-                            )}
-                          </td>
-                          <td className="p-2.5 text-center font-mono text-slate-600">{t.max_periods_per_day} JP</td>
-                          <td className="p-2.5 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
-                              <button
-                                onClick={() => handleStartEditTeacher(t)}
-                                className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
-                                title="Edit Guru & Linieritas"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDelete('teachers', t.id, t.full_name)}
-                                className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
-                                title="Hapus Guru"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {teachers.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="p-4 text-center text-slate-400 italic">Belum ada data guru.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: MATA PELAJARAN */}
+          {/* TAB 1: MATA PELAJARAN */}
           {activeTab === 'SUBJECT' && (
             <div className="space-y-4">
               <form
@@ -750,7 +528,7 @@ export const MasterDataModal: React.FC<Props> = ({
                 }`}
               >
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Kode Mapel</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Kode Mapel*</label>
                   <input
                     type="text"
                     required
@@ -761,7 +539,7 @@ export const MasterDataModal: React.FC<Props> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Mata Pelajaran</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Mata Pelajaran*</label>
                   <input
                     type="text"
                     required
@@ -857,13 +635,13 @@ export const MasterDataModal: React.FC<Props> = ({
             </div>
           )}
 
-          {/* TAB 3: STRUKTUR KURIKULUM (STANDAR JP PER JENJANG) */}
+          {/* TAB 2: STRUKTUR KURIKULUM (STANDAR JP PER JENJANG) */}
           {activeTab === 'CURRICULUM' && (
             <div className="space-y-4">
               <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
-                  Atur standar jumlah JP per minggu untuk tiap mata pelajaran di masing-masing jenjang kelas. Pengaturan ini akan mengisi otomatis beban JP dan memberikan rekomendasi mapel pilihan saat penugasan guru.
+                  Atur alokasi JP standar mingguan untuk tiap mata pelajaran pada masing-masing jenjang. Pengaturan ini akan mengisi otomatis jumlah JP dan memberi rekomendasi penugasan.
                 </span>
               </div>
 
@@ -872,7 +650,7 @@ export const MasterDataModal: React.FC<Props> = ({
                 className="grid grid-cols-1 md:grid-cols-5 gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200"
               >
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Tingkat Jenjang</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Tingkat Jenjang*</label>
                   <select
                     value={currGradeLevel}
                     onChange={(e) => setCurrGradeLevel(Number(e.target.value))}
@@ -888,7 +666,7 @@ export const MasterDataModal: React.FC<Props> = ({
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Mata Pelajaran</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Mata Pelajaran*</label>
                   <select
                     value={currSubjectId}
                     onChange={(e) => setCurrSubjectId(e.target.value)}
@@ -1005,6 +783,218 @@ export const MasterDataModal: React.FC<Props> = ({
             </div>
           )}
 
+          {/* TAB 3: GURU & LINIERITAS (INPUT MAKS JP SUDAH DIHILANGKAN) */}
+          {activeTab === 'TEACHER' && (
+            <div className="space-y-4">
+              <form
+                onSubmit={handleSubmitTeacher}
+                className={`p-4 rounded-xl border space-y-3.5 transition ${
+                  editingTeacherId ? 'bg-amber-50/70 border-amber-300' : 'bg-slate-50 border-slate-200'
+                }`}
+              >
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Kode Guru*</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="G01"
+                      value={teacherCode}
+                      onChange={(e) => setTeacherCode(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs uppercase bg-white font-bold"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Lengkap & Gelar*</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Contoh: Drs. H. Ahmad Fauzi, M.Pd."
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Jenjang Ijazah</label>
+                    <select
+                      value={educationDegree}
+                      onChange={(e) => setEducationDegree(e.target.value)}
+                      className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-white font-semibold"
+                    >
+                      <option value="S1">S1 / D4</option>
+                      <option value="S2">S2 (Magister)</option>
+                      <option value="S3">S3 (Doktor)</option>
+                      <option value="D3">D3</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Jurusan / Program Studi Ijazah</label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: Pendidikan Fisika / Sastra Inggris"
+                    value={major}
+                    onChange={(e) => setMajor(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  />
+                </div>
+
+                {/* Pemilih Linieritas Mapel yang Diizinkan */}
+                <div className="pt-2 border-t border-slate-200">
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
+                    <GraduationCap className="w-4 h-4 text-indigo-600" />
+                    <span>Mata Pelajaran yang Diizinkan / Linier Sesuai Sertifikasi & Ijazah:</span>
+                  </label>
+                  {subjects.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1 bg-white border border-slate-200 rounded-lg">
+                      {subjects.map((sub) => {
+                        const isSelected = eligibleSubjectIds.includes(sub.id);
+                        return (
+                          <button
+                            key={sub.id}
+                            type="button"
+                            onClick={() => handleToggleEligibleSubject(sub.id)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1 ${
+                              isSelected
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-3 h-3" />
+                            ) : (
+                              <Square className="w-3 h-3 opacity-40" />
+                            )}
+                            <span>{sub.subject_name} ({sub.subject_code})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic">
+                      Data Mata Pelajaran masih kosong. Silakan isi terlebih dahulu di tab 1 (Mata Pelajaran).
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  {editingTeacherId && (
+                    <button
+                      type="button"
+                      onClick={resetForms}
+                      className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold"
+                    >
+                      Batal Edit
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 text-white transition shadow-sm ${
+                      editingTeacherId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                    }`}
+                  >
+                    {editingTeacherId ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                    <span>{editingTeacherId ? 'Simpan Perubahan Guru' : 'Tambah Guru & Linieritas'}</span>
+                  </button>
+                </div>
+              </form>
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="font-bold text-slate-700 text-xs">Daftar Guru & Kualifikasi ({teachers.length})</span>
+                {teachers.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetAllCategory('teachers', 'Guru')}
+                    disabled={loading}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Kosongkan Semua Guru</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Tabel Guru (Kolom Maks JP dihapus, kolom Mapel Linier mendapat ruang lebih leluasa) */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[300px] overflow-y-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+                    <tr>
+                      <th className="p-2.5 w-16 text-center bg-slate-100">Kode</th>
+                      <th className="p-2.5 w-72 bg-slate-100">Nama Guru & Pendidikan</th>
+                      <th className="p-2.5 bg-slate-100">Mata Pelajaran Linier Diizinkan</th>
+                      <th className="p-2.5 w-20 text-center bg-slate-100">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {teachers.map((t) => {
+                      const eligibleSubs = subjects.filter((s) =>
+                        (t.eligible_subject_ids || []).includes(s.id)
+                      );
+                      return (
+                        <tr
+                          key={t.id}
+                          className={`transition ${
+                            editingTeacherId === t.id ? 'bg-amber-50' : 'hover:bg-slate-50/80'
+                          }`}
+                        >
+                          <td className="p-2.5 text-center font-mono font-bold text-slate-600">{t.teacher_code}</td>
+                          <td className="p-2.5">
+                            <p className="font-bold text-slate-800">{t.full_name}</p>
+                            <span className="text-[10px] text-slate-500 font-medium">
+                              {t.education_degree || 'S1'} — {t.major || 'Belum diisi'}
+                            </span>
+                          </td>
+                          <td className="p-2.5">
+                            {eligibleSubs.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {eligibleSubs.map((sub) => (
+                                  <span
+                                    key={sub.id}
+                                    className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded text-[10px] font-bold"
+                                  >
+                                    {sub.subject_name}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">Otomatis Berdasarkan Nama Jurusan</span>
+                            )}
+                          </td>
+                          <td className="p-2.5 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => handleStartEditTeacher(t)}
+                                className="p-1 text-slate-400 hover:text-amber-600 rounded transition"
+                                title="Edit Guru & Linieritas"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDelete('teachers', t.id, t.full_name)}
+                                className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
+                                title="Hapus Guru"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {teachers.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="p-4 text-center text-slate-400 italic">Belum ada data guru.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* TAB 4: KELAS */}
           {activeTab === 'CLASS' && (
             <div className="space-y-4">
@@ -1015,7 +1005,7 @@ export const MasterDataModal: React.FC<Props> = ({
                 }`}
               >
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Rombel / Kelas</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Rombel / Kelas*</label>
                   <input
                     type="text"
                     required
@@ -1026,7 +1016,7 @@ export const MasterDataModal: React.FC<Props> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Tingkat Kelas</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Tingkat Kelas*</label>
                   <select
                     value={gradeLevel}
                     onChange={(e) => setGradeLevel(Number(e.target.value))}
@@ -1136,7 +1126,7 @@ export const MasterDataModal: React.FC<Props> = ({
                 }`}
               >
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Ruangan Khusus</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nama Ruangan Khusus*</label>
                   <input
                     type="text"
                     required
