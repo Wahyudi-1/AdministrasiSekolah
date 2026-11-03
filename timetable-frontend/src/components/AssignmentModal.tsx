@@ -13,6 +13,8 @@ import {
   Target,
   AlertTriangle,
   Compass,
+  Layers,
+  BookOpen,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { Teacher, Subject, ClassRoom, Lesson, CurriculumStructure } from '../types';
@@ -40,26 +42,29 @@ export const AssignmentModal: React.FC<Props> = ({
   schoolId,
   onDataUpdated,
 }) => {
-  // 1. SEMUA HOOK STATE DILETAKKAN DI PALING ATAS
+  // 1. STATE DASAR
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
-  const [totalPeriods, setTotalPeriods] = useState<number>(4);
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // 2. INISIALISASI DEFAULT
+  // 2. INISIALISASI DEFAULT GURU & MAPEL
   useEffect(() => {
     if (!selectedTeacherId && teachers.length > 0) setSelectedTeacherId(teachers[0].id);
     if (!selectedSubjectId && subjects.length > 0) setSelectedSubjectId(subjects[0].id);
   }, [teachers, subjects, selectedTeacherId, selectedSubjectId]);
 
-  // 3. DATA GURU TERPILIH
+  // 3. OBJEK GURU & MAPEL TERPILIH
   const selectedTeacher = useMemo(() => {
     return teachers.find((t) => t.id === selectedTeacherId);
   }, [teachers, selectedTeacherId]);
 
-  // 4. ANALISIS BEBAN DAN AFINITAS GURU
+  const selectedSubject = useMemo(() => {
+    return subjects.find((s) => s.id === selectedSubjectId);
+  }, [subjects, selectedSubjectId]);
+
+  // 4. ANALISIS BEBAN & AFINITAS GURU SAAT INI
   const teacherAnalytics = useMemo(() => {
     if (!selectedTeacherId) {
       return {
@@ -110,7 +115,7 @@ export const AssignmentModal: React.FC<Props> = ({
     };
   }, [lessons, selectedTeacherId, classes]);
 
-  // 5. PEMBAGIAN MAPEL LINIER VS LAINNYA
+  // 5. PEMBAGIAN MAPEL LINIER VS LINTAS BIDANG
   const { linearSubjects, otherSubjects } = useMemo(() => {
     const eligibleIds = new Set(selectedTeacher?.eligible_subject_ids || []);
     const linear: Subject[] = [];
@@ -138,8 +143,27 @@ export const AssignmentModal: React.FC<Props> = ({
     }
   }, [selectedTeacherId, linearSubjects]);
 
-  // 6. SKOR REKOMENDASI KELAS DENGAN PROTEKSI STRING PADA SORT
+  // 6. ATURAN STRUKTUR KURIKULUM & DAFTAR JENJANG AKTIF UNTUK MAPEL INI
+  const subjectCurriculumRules = useMemo(() => {
+    if (!selectedSubjectId) return [];
+    return curriculumStructures.filter((cs) => cs.subject_id === selectedSubjectId);
+  }, [curriculumStructures, selectedSubjectId]);
+
+  const allowedGradeLevels = useMemo(() => {
+    return new Set(subjectCurriculumRules.map((cs) => cs.grade_level));
+  }, [subjectCurriculumRules]);
+
+  // 7. PENYARINGAN KELAS KETAT: HANYA KELAS YANG JENJANGNYA TERDAFTAR PADA MAPEL INI
   const availableClassesWithScores = useMemo(() => {
+    // Filter hanya kelas yang jenjangnya terdaftar di kurikulum untuk mapel ini
+    // dan belum pernah diajar oleh guru ini
+    const filteredClasses = classes.filter((cls) => {
+      const isGradeAllowed = allowedGradeLevels.has(cls.grade_level);
+      const isNotAssignedToTeacher = !teacherAnalytics.assignedClassIds.has(cls.id);
+      return isGradeAllowed && isNotAssignedToTeacher;
+    });
+
+    // Statistik beban jam kelas
     const classTotalJPMap = new Map<string, number>();
     const gradeMaxJPMap = new Map<number, number>();
 
@@ -152,8 +176,7 @@ export const AssignmentModal: React.FC<Props> = ({
       if (jp > currentMax) gradeMaxJPMap.set(c.grade_level, jp);
     });
 
-    return classes
-      .filter((cls) => !teacherAnalytics.assignedClassIds.has(cls.id))
+    return filteredClasses
       .map((cls) => {
         const isSameDominantGrade =
           teacherAnalytics.dominantGrade !== null && cls.grade_level === teacherAnalytics.dominantGrade;
@@ -167,8 +190,8 @@ export const AssignmentModal: React.FC<Props> = ({
         const maxGradeJP = gradeMaxJPMap.get(cls.grade_level) || 0;
         const jpDeficit = maxGradeJP - currentClassJP;
 
-        const currRule = curriculumStructures.find(
-          (cs) => cs.grade_level === cls.grade_level && cs.subject_id === selectedSubjectId
+        const currRule = subjectCurriculumRules.find(
+          (cs) => cs.grade_level === cls.grade_level
         );
 
         let priorityScore = 0;
@@ -194,9 +217,40 @@ export const AssignmentModal: React.FC<Props> = ({
         }
         return String(a.cls.class_name || '').localeCompare(String(b.cls.class_name || ''));
       });
-  }, [classes, teacherAnalytics, lessons, selectedSubjectId, curriculumStructures]);
+  }, [classes, allowedGradeLevels, teacherAnalytics, lessons, selectedSubjectId, subjectCurriculumRules]);
 
-  // 7. PERINGATAN FRAGMENTASI
+  // Bersihkan pilihan kelas yang tidak lagi relevan saat mapel atau guru berganti
+  useEffect(() => {
+    setSelectedClassIds((prev) =>
+      prev.filter((cId) => availableClassesWithScores.some((item) => item.cls.id === cId))
+    );
+  }, [selectedSubjectId, selectedTeacherId, availableClassesWithScores]);
+
+  // 8. RINGKASAN TAMBAHAN JP OTOMATIS BERDASARKAN KELAS TERPILIH
+  const selectedClassesSummary = useMemo(() => {
+    let totalAddedJP = 0;
+    selectedClassIds.forEach((cId) => {
+      const cls = classes.find((c) => c.id === cId);
+      if (cls) {
+        const rule = subjectCurriculumRules.find((cs) => cs.grade_level === cls.grade_level);
+        totalAddedJP += rule?.default_periods ?? 0;
+      }
+    });
+
+    return {
+      count: selectedClassIds.length,
+      totalAddedJP,
+      newTotalTeacherJP: teacherAnalytics.totalJP + totalAddedJP,
+    };
+  }, [selectedClassIds, classes, subjectCurriculumRules, teacherAnalytics.totalJP]);
+
+  // 9. INFO MAPEL PILIHAN & PERINGATAN FRAGMENTASI
+  const currentSubjectElectiveInfo = useMemo(() => {
+    return curriculumStructures.find(
+      (cs) => cs.subject_id === selectedSubjectId && cs.is_compulsory === false
+    );
+  }, [curriculumStructures, selectedSubjectId]);
+
   const fragmentationWarning = useMemo(() => {
     const warnings: string[] = [];
 
@@ -228,35 +282,8 @@ export const AssignmentModal: React.FC<Props> = ({
     return warnings;
   }, [selectedSubjectId, selectedClassIds, teacherAnalytics, classes]);
 
-  // 8. AUTO-FILL TOTAL JP BERDASARKAN KURIKULUM
-  useEffect(() => {
-    if (!selectedSubjectId) return;
-
-    const targetGrade =
-      selectedClassIds.length > 0
-        ? classes.find((c) => c.id === selectedClassIds[0])?.grade_level
-        : teacherAnalytics.dominantGrade || classes[0]?.grade_level;
-
-    if (!targetGrade) return;
-
-    const matchedRule = curriculumStructures.find(
-      (cs) => cs.grade_level === targetGrade && cs.subject_id === selectedSubjectId
-    );
-
-    if (matchedRule && matchedRule.default_periods > 0) {
-      setTotalPeriods(matchedRule.default_periods);
-    }
-  }, [selectedSubjectId, selectedClassIds, classes, curriculumStructures, teacherAnalytics.dominantGrade]);
-
-  // 9. INFO MAPEL PILIHAN
-  const currentSubjectElectiveInfo = useMemo(() => {
-    return curriculumStructures.find(
-      (cs) => cs.subject_id === selectedSubjectId && cs.is_compulsory === false
-    );
-  }, [curriculumStructures, selectedSubjectId]);
-
   // =========================================================================
-  // SELURUH HOOK DI ATAS SUDAH TUNTAS. BARU JALANKAN EARLY RETURN DI SINI:
+  // SELURUH HOOK DI ATAS TUNTAS DIEKSEKUSI. BARU EARLY RETURN DI SINI:
   // =========================================================================
   if (!isOpen) return null;
 
@@ -292,6 +319,7 @@ export const AssignmentModal: React.FC<Props> = ({
     setSelectedClassIds([]);
   };
 
+  // Simpan Penugasan: Setiap kelas otomatis menggunakan standar JP jenjangnya dari kurikulum
   const handleSaveAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTeacherId || !selectedSubjectId) {
@@ -307,14 +335,22 @@ export const AssignmentModal: React.FC<Props> = ({
     setErrorMsg('');
 
     try {
-      const defaultSplit =
-        totalPeriods === 1 ? '1' :
-        totalPeriods === 2 ? '2' :
-        totalPeriods === 3 ? '2+1' :
-        totalPeriods === 4 ? '2+2' :
-        totalPeriods === 5 ? '3+2' : '3+3';
-
       for (const classId of selectedClassIds) {
+        const targetClass = classes.find((c) => c.id === classId);
+        const currRule = subjectCurriculumRules.find(
+          (cs) => cs.grade_level === targetClass?.grade_level
+        );
+        const assignedPeriods = currRule?.default_periods ?? 4;
+
+        const defaultSplit =
+          assignedPeriods === 1 ? '1' :
+          assignedPeriods === 2 ? '2' :
+          assignedPeriods === 3 ? '2+1' :
+          assignedPeriods === 4 ? '2+2' :
+          assignedPeriods === 5 ? '3+2' :
+          assignedPeriods === 6 ? '3+3' :
+          `${Math.ceil(assignedPeriods / 2)}+${Math.floor(assignedPeriods / 2)}`;
+
         const existing = lessons.find(
           (l) => l.class_id === classId && l.subject_id === selectedSubjectId
         );
@@ -324,8 +360,9 @@ export const AssignmentModal: React.FC<Props> = ({
             .from('lessons')
             .update({
               teacher_id: selectedTeacherId,
-              total_periods_per_week: Number(totalPeriods),
-              total_periods: Number(totalPeriods),
+              total_periods_per_week: Number(assignedPeriods),
+              total_periods: Number(assignedPeriods),
+              split_pattern: defaultSplit,
               updated_at: new Date().toISOString(),
             })
             .eq('id', existing.id)
@@ -338,8 +375,8 @@ export const AssignmentModal: React.FC<Props> = ({
               teacher_id: selectedTeacherId,
               subject_id: selectedSubjectId,
               class_id: classId,
-              total_periods_per_week: Number(totalPeriods),
-              total_periods: Number(totalPeriods),
+              total_periods_per_week: Number(assignedPeriods),
+              total_periods: Number(assignedPeriods),
               split_pattern: defaultSplit,
               allowed_slot_types: 'FORMAL',
               preferred_room_id: null,
@@ -382,9 +419,9 @@ export const AssignmentModal: React.FC<Props> = ({
           <div className="flex items-center gap-2.5">
             <UserCheck className="w-5 h-5 text-indigo-400" />
             <div>
-              <h2 className="text-base font-bold">Penugasan Mengajar Cerdas (Rekomendasi Linieritas & Fokus Jenjang)</h2>
+              <h2 className="text-base font-bold">Penugasan Mengajar Guru (Distribusi Jam KBM)</h2>
               <p className="text-xs text-slate-400">
-                Sistem otomatis menyarankan mapel linier, standar JP kurikulum, dan konsentrasi jenjang kelas
+                Alokasi otomatis mengikuti standar JP kurikulum dan menyaring rombel sesuai jenjang mapel
               </p>
             </div>
           </div>
@@ -403,7 +440,7 @@ export const AssignmentModal: React.FC<Props> = ({
         <div className="p-6 overflow-y-auto space-y-5 flex-1 text-xs">
           <form onSubmit={handleSaveAssignment} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {/* 1. Pilih Guru */}
+              {/* Kolom 1: Pilih Guru */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Guru Pengampu</label>
                 <select
@@ -427,7 +464,7 @@ export const AssignmentModal: React.FC<Props> = ({
                   </div>
                   <div className="flex items-center justify-between pt-1 border-t border-indigo-100">
                     <span className="text-slate-600 flex items-center gap-1">
-                      <Clock className="w-3 h-3 text-indigo-500" /> Total Ditugaskan:
+                      <Clock className="w-3 h-3 text-indigo-500" /> Beban Terdaftar:
                     </span>
                     <span className="font-mono font-bold text-indigo-950">
                       {teacherAnalytics.totalJP} JP / Min {selectedTeacher?.min_periods_per_week ?? 24} JP
@@ -436,15 +473,15 @@ export const AssignmentModal: React.FC<Props> = ({
                   {teacherAnalytics.dominantGrade && (
                     <div className="flex items-center justify-between text-[10px] text-emerald-800 font-bold pt-0.5">
                       <span className="flex items-center gap-1">
-                        <Target className="w-3 h-3 text-emerald-600" /> Fokus Saat Ini:
+                        <Target className="w-3 h-3 text-emerald-600" /> Fokus Jenjang:
                       </span>
-                      <span>Jenjang Kelas {teacherAnalytics.dominantGrade}</span>
+                      <span>Tingkat Kelas {teacherAnalytics.dominantGrade}</span>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* 2. Pilih Mata Pelajaran */}
+              {/* Kolom 2: Pilih Mata Pelajaran */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
                   <span>Mata Pelajaran</span>
@@ -485,32 +522,53 @@ export const AssignmentModal: React.FC<Props> = ({
                   <div className="mt-1.5 p-2 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-900 flex items-start gap-1.5">
                     <Compass className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                     <span>
-                      <strong>Mapel Pilihan/Peminatan:</strong> Tidak wajib di semua kelas jenjang {currentSubjectElectiveInfo.grade_level}. Alokasikan pada kelas peminatan terkait.
+                      <strong>Mapel Pilihan/Peminatan:</strong> Hanya ditugaskan ke kelas rombel peminatan tertentu di jenjang Kelas {currentSubjectElectiveInfo.grade_level}.
                     </span>
                   </div>
                 )}
               </div>
 
-              {/* 3. Total JP / Minggu */}
+              {/* Kolom 3: Info Standar Alokasi JP Kurikulum (Input manual sudah dihapus) */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
-                  <span>Total JP / Minggu</span>
-                  <span className="text-[10px] text-indigo-600 font-semibold">Auto-Kurikulum</span>
+                  <span>Standar JP Kurikulum</span>
+                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.2 rounded flex items-center gap-1">
+                    <Layers className="w-3 h-3 text-emerald-600" /> Otomatis
+                  </span>
                 </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={14}
-                  value={totalPeriods}
-                  onChange={(e) => setTotalPeriods(Number(e.target.value))}
-                  className="w-full p-2 border rounded-lg bg-white font-bold text-center text-indigo-900 text-sm"
-                />
-                {selectedClassIds.length > 0 && (
-                  <p className="text-[10px] text-slate-500 mt-1.5 text-center">
-                    Tambahan beban: <strong>+{selectedClassIds.length * totalPeriods} JP</strong> (Total{' '}
-                    <strong>{teacherAnalytics.totalJP + selectedClassIds.length * totalPeriods} JP</strong>)
-                  </p>
-                )}
+                
+                <div className="p-2.5 bg-white border border-slate-200 rounded-lg space-y-1.5 min-h-[76px] flex flex-col justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-500 font-semibold block mb-1">
+                      Jenjang & Beban Baku Mapel Ini:
+                    </span>
+                    {subjectCurriculumRules.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {subjectCurriculumRules.map((rule) => (
+                          <span
+                            key={rule.id}
+                            className="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-900 font-bold text-[10.5px]"
+                          >
+                            Kelas {rule.grade_level}: <span className="font-mono text-indigo-700">{rule.default_periods} JP</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-[10.5px] text-rose-600 font-semibold italic">
+                        Belum ada standar JP di kurikulum
+                      </span>
+                    )}
+                  </div>
+
+                  {selectedClassesSummary.count > 0 && (
+                    <div className="pt-1.5 border-t border-slate-100 text-[10.5px] text-slate-600 flex items-center justify-between">
+                      <span>Total Tambahan:</span>
+                      <strong className="text-emerald-700 font-mono text-xs">
+                        +{selectedClassesSummary.totalAddedJP} JP ({selectedClassesSummary.count} Kelas)
+                      </strong>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -526,15 +584,16 @@ export const AssignmentModal: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Pilihan Kelas */}
+            {/* Pilihan Rombel Kelas (Hanya Jenjang yang Sesuai Kurikulum Mapel Terpilih) */}
             <div className="pt-2 border-t border-slate-200">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                 <div>
                   <label className="block font-bold text-slate-700">
-                    Tugaskan ke Kelas (Diurutkan Berdasarkan Rekomendasi Fokus Jenjang):
+                    Tugaskan ke Kelas (Hanya Jenjang yang Memuat Mapel {selectedSubject?.subject_name}):
                   </label>
                   <span className="text-[10px] text-slate-500">
-                    Tersedia {availableClassesWithScores.length} kelas yang belum diajar guru ini
+                    Tersedia {availableClassesWithScores.length} kelas di jenjang{' '}
+                    {Array.from(allowedGradeLevels).sort().map((g) => `Kelas ${g}`).join(', ') || '-'}
                   </span>
                 </div>
 
@@ -570,9 +629,22 @@ export const AssignmentModal: React.FC<Props> = ({
                 )}
               </div>
 
-              {availableClassesWithScores.length > 0 ? (
+              {allowedGradeLevels.size === 0 ? (
+                /* Jika mapel belum didaftarkan di jenjang manapun pada master kurikulum */
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs flex items-start gap-3">
+                  <Compass className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">Mata Pelajaran Belum Memiliki Konfigurasi Jenjang di Kurikulum</p>
+                    <p className="text-[11px] text-amber-800 mt-1 leading-relaxed">
+                      Mata pelajaran <strong>{selectedSubject?.subject_name}</strong> belum dimasukkan ke jenjang kelas manapun pada menu <strong>Master Data &amp; Kurikulum &rarr; 2. Standar JP Jenjang</strong>.
+                      Silakan tetapkan standar JP jenjangnya terlebih dahulu agar rombongan belajar kelas dapat dimunculkan di sini.
+                    </p>
+                  </div>
+                </div>
+              ) : availableClassesWithScores.length > 0 ? (
+                /* Grid Kelas yang Sesuai Jenjang Mapel */
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                  {availableClassesWithScores.map(({ cls, isSameDominantGrade, existingLessonInClass, jpDeficit }) => {
+                  {availableClassesWithScores.map(({ cls, isSameDominantGrade, existingLessonInClass, jpDeficit, currRule }) => {
                     const isChecked = selectedClassIds.includes(cls.id);
                     const existingTeacher = existingLessonInClass
                       ? teachers.find((t) => t.id === existingLessonInClass.teacher_id)
@@ -583,7 +655,7 @@ export const AssignmentModal: React.FC<Props> = ({
                         key={cls.id}
                         type="button"
                         onClick={() => handleToggleClass(cls.id)}
-                        className={`p-2 rounded-xl border text-left transition flex flex-col justify-between ${
+                        className={`p-2.5 rounded-xl border text-left transition flex flex-col justify-between ${
                           isChecked
                             ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                             : isSameDominantGrade
@@ -600,18 +672,20 @@ export const AssignmentModal: React.FC<Props> = ({
                             )}
                             <span>Kelas {cls.class_name}</span>
                           </div>
-                          {isSameDominantGrade && (
-                            <span
-                              className={`text-[9px] px-1.5 py-0.2 rounded font-bold ${
-                                isChecked ? 'bg-indigo-500 text-white' : 'bg-emerald-200 text-emerald-900'
-                              }`}
-                            >
-                              ⭐ Fokus
-                            </span>
-                          )}
+                          
+                          {/* Label Beban JP Otomatis Kurikulum */}
+                          <span
+                            className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
+                              isChecked
+                                ? 'bg-indigo-500 text-white'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200'
+                            }`}
+                          >
+                            {currRule?.default_periods ?? '-'} JP
+                          </span>
                         </div>
 
-                        <div className="mt-1.5 pl-5 text-[9.5px] leading-tight">
+                        <div className="mt-2 pl-5 text-[9.5px] leading-tight flex items-center justify-between">
                           {existingTeacher ? (
                             <span className={isChecked ? 'text-amber-200' : 'text-amber-700 font-semibold'}>
                               Diampu: {existingTeacher.teacher_code}
@@ -625,22 +699,44 @@ export const AssignmentModal: React.FC<Props> = ({
                               Tingkat {cls.grade_level}
                             </span>
                           )}
+
+                          {isSameDominantGrade && (
+                            <span
+                              className={`text-[9px] px-1 py-0.2 rounded font-bold ${
+                                isChecked ? 'bg-indigo-400 text-white' : 'bg-emerald-200 text-emerald-900'
+                              }`}
+                            >
+                              ⭐ Fokus
+                            </span>
+                          )}
                         </div>
                       </button>
                     );
                   })}
                 </div>
               ) : (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-[11px] flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <div className="p-3 bg-slate-100 border border-slate-200 rounded-lg text-slate-600 text-[11px] flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-slate-500 shrink-0" />
                   <span>
-                    Guru ini sudah ditugaskan di seluruh kelas ({classes.length} kelas).
+                    Seluruh kelas di jenjang mapel ini ({Array.from(allowedGradeLevels).map((g) => `Kelas ${g}`).join(', ')}) sudah diajar oleh guru ini.
                   </span>
                 </div>
               )}
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-[11px] text-slate-500 font-medium">
+                {selectedClassesSummary.count > 0 ? (
+                  <>
+                    Beban guru akan menjadi{' '}
+                    <strong className="text-indigo-900 font-bold">{selectedClassesSummary.newTotalTeacherJP} JP</strong>{' '}
+                    (ditambah {selectedClassesSummary.totalAddedJP} JP dari {selectedClassesSummary.count} kelas terpilih).
+                  </>
+                ) : (
+                  'Pilih kelas di atas untuk menerapkan penugasan.'
+                )}
+              </span>
+
               <button
                 type="submit"
                 disabled={loading || selectedClassIds.length === 0}
@@ -651,7 +747,9 @@ export const AssignmentModal: React.FC<Props> = ({
                 }`}
               >
                 <Plus className="w-4 h-4" />
-                <span>Simpan Penugasan ({selectedClassIds.length} Kelas Terpilih)</span>
+                <span>
+                  Simpan Penugasan ({selectedClassesSummary.count} Kelas | +{selectedClassesSummary.totalAddedJP} JP)
+                </span>
               </button>
             </div>
           </form>
