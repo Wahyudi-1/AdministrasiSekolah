@@ -32,6 +32,7 @@ import {
   CloudUpload,
   Eye,
   EyeOff,
+  Filter,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Session } from '@supabase/supabase-js';
@@ -121,6 +122,7 @@ export const App: React.FC = () => {
   const [configZone, setConfigZone] = useState<'PRE' | 'FORMAL' | 'POST'>('FORMAL');
   const [configRoomId, setConfigRoomId] = useState<string>('');
   const [savingCardConfig, setSavingCardConfig] = useState<boolean>(false);
+  const [showOnlySelectedTeacherInCardConfig, setShowOnlySelectedTeacherInCardConfig] = useState<boolean>(true); // <-- Default hanya guru terpilih
 
   // State Slot Waktu (Multi-Hari)
   const [targetDayIndices, setTargetDayIndices] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -376,7 +378,6 @@ export const App: React.FC = () => {
       setWorkDays(loadedWorkDays);
       if (slotsRes.data) setTimeSlots(slotsRes.data);
 
-      // Sinkronkan daftar mapel linier ke dalam objek guru
       if (teachersRes.data) {
         const eligibleMap = new Map<string, string[]>();
         (eligibleRes.data || []).forEach((row: any) => {
@@ -1086,6 +1087,16 @@ export const App: React.FC = () => {
     }
   }, [filterMode, selectedId, classes, teachers, schoolProfile]);
 
+  // Filter khusus untuk modal "Pengaturan Kartu Beban Mengajar" (Default: hanya guru terpilih)
+  const displayedConfigLessons = useMemo(() => {
+    if (!configAssignmentKey) return lessons;
+    const [tId] = configAssignmentKey.split('__');
+    if (showOnlySelectedTeacherInCardConfig && tId) {
+      return lessons.filter((l) => l.teacher_id === tId);
+    }
+    return lessons;
+  }, [lessons, configAssignmentKey, showOnlySelectedTeacherInCardConfig]);
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm gap-2">
@@ -1643,7 +1654,7 @@ export const App: React.FC = () => {
       {/* MODAL ADMIN TOKEN */}
       {isAdmin && <AdminTokenModal isOpen={isAdminModalOpen} onClose={() => setIsAdminModalOpen(false)} />}
 
-      {/* MODAL MASTER DATA (LENGKAP DENGAN KURIKULUM & SCHOOL_ID) */}
+      {/* MODAL MASTER DATA */}
       {session?.user?.id && (
         <MasterDataModal
           isOpen={isMasterModalOpen}
@@ -1658,7 +1669,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL IMPORT EXCEL (LENGKAP DENGAN 4 SHEET & SCHOOL_ID) */}
+      {/* MODAL IMPORT EXCEL */}
       {session?.user?.id && (
         <ExcelImportModal
           isOpen={isImportModalOpen}
@@ -1668,7 +1679,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL PENUGASAN GURU (CERDAS DENGAN LINIERITAS, AUTO-KURIKULUM & FOKUS JENJANG) */}
+      {/* MODAL PENUGASAN GURU */}
       {session?.user?.id && (
         <AssignmentModal
           isOpen={isAssignmentModalOpen}
@@ -1683,18 +1694,18 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL KARTU BEBAN MENGAJAR */}
+      {/* MODAL KARTU BEBAN MENGAJAR (DENGAN FILTER GURU TERPILIH) */}
       {isLessonModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between border-b pb-3">
+            <div className="flex items-center justify-between border-b pb-3 shrink-0">
               <h2 className="text-base font-bold text-slate-900">Pengaturan Kartu Beban Mengajar</h2>
               <button onClick={() => setIsLessonModalOpen(false)}>
                 <X className="w-5 h-5 text-slate-400 hover:text-slate-700" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveCardConfig} className="p-4 bg-slate-50 rounded-xl border space-y-3.5">
+            <form onSubmit={handleSaveCardConfig} className="p-4 bg-slate-50 rounded-xl border space-y-3.5 shrink-0">
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Pilih Penugasan Guru & Mapel:</label>
                 <select
@@ -1800,27 +1811,72 @@ export const App: React.FC = () => {
               </div>
             </form>
 
-            <div className="border-t pt-3 overflow-y-auto flex-1 space-y-1.5">
-              {lessons.map((l) => {
+            {/* Header Daftar Kartu & Tombol Toggle Filter Guru */}
+            <div className="flex items-center justify-between border-t pt-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-700">
+                  {showOnlySelectedTeacherInCardConfig
+                    ? `Daftar Kartu: ${teachers.find((t) => t.id === configAssignmentKey.split('__')[0])?.full_name || 'Guru Terpilih'}`
+                    : 'Daftar Kartu Seluruh Guru'}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-mono">
+                  {displayedConfigLessons.length} Kartu
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowOnlySelectedTeacherInCardConfig(!showOnlySelectedTeacherInCardConfig)}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg text-[11px] font-semibold transition"
+                title="Alihkan antara menampilkan kartu guru terpilih saja atau semua guru"
+              >
+                <Filter className="w-3 h-3 text-indigo-600" />
+                <span>{showOnlySelectedTeacherInCardConfig ? 'Tampilkan Semua Guru' : 'Hanya Guru Terpilih'}</span>
+              </button>
+            </div>
+
+            {/* List Kartu Pelajaran (Default: Hanya Guru Terpilih) */}
+            <div className="overflow-y-auto flex-1 space-y-1.5 max-h-[300px]">
+              {displayedConfigLessons.map((l) => {
                 const tch = teachers.find((t) => t.id === l.teacher_id);
                 const sub = subjects.find((s) => s.id === l.subject_id);
                 const cls = classes.find((c) => c.id === l.class_id);
+                const pattern = Array.isArray(l.split_pattern) ? l.split_pattern.join('+') : String(l.split_pattern || '-');
                 return (
-                  <div key={l.id} className="p-2.5 bg-slate-50 border rounded-lg flex items-center justify-between">
-                    <div>
-                      <span className="font-bold text-indigo-900">{sub?.subject_name}</span> — Kelas {cls?.class_name} ({tch?.full_name})
+                  <div key={l.id} className="p-2.5 bg-slate-50 hover:bg-slate-100/80 border rounded-lg flex items-center justify-between transition">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-indigo-900">{sub?.subject_name}</span>
+                      <span className="text-slate-400">&bull;</span>
+                      <span className="font-semibold text-slate-700">Kelas {cls?.class_name}</span>
+                      <span className="text-slate-400">&bull;</span>
+                      <span className="text-slate-600">({tch?.full_name})</span>
+                      <span className="px-1.5 py-0.2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded text-[10px] font-mono font-bold">
+                        Pola: {pattern} JP
+                      </span>
+                      {l.preferred_room_id && (
+                        <span className="px-1.5 py-0.2 bg-amber-50 border border-amber-200 text-amber-700 rounded text-[10px] font-semibold">
+                          {rooms.find((r) => r.id === l.preferred_room_id)?.room_name}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => handleEditSingleLesson(l)} className="text-slate-400 hover:text-amber-600 p-1">
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => handleEditSingleLesson(l)} className="text-slate-400 hover:text-amber-600 p-1" title="Edit Kartu">
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => handleDeleteLesson(l.id)} className="text-slate-400 hover:text-rose-600 p-1">
+                      <button onClick={() => handleDeleteLesson(l.id)} className="text-slate-400 hover:text-rose-600 p-1" title="Hapus Kartu">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
                 );
               })}
+              {displayedConfigLessons.length === 0 && (
+                <div className="p-4 text-center text-slate-400 italic">
+                  {showOnlySelectedTeacherInCardConfig
+                    ? 'Belum ada kartu beban mengajar untuk guru ini.'
+                    : 'Belum ada kartu beban mengajar yang dibuat.'}
+                </div>
+              )}
             </div>
           </div>
         </div>
