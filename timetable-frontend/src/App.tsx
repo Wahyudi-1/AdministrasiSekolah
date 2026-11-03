@@ -611,7 +611,6 @@ export const App: React.FC = () => {
     return `${half}+${jp - half}`;
   };
 
-  // Handler saat berganti penugasan di modal pengaturan kartu
   const handleAssignmentKeyChange = (key: string) => {
     setConfigAssignmentKey(key);
     if (!key) {
@@ -635,7 +634,6 @@ export const App: React.FC = () => {
       const parts = existing.split('+').map(Number).filter((n) => !isNaN(n) && n > 0);
       const sum = parts.reduce((a, b) => a + b, 0);
 
-      // Gunakan pola lama jika cocok dengan total JP, jika tidak setel ke saran default
       setConfigSplitPattern(sum === expectedJP ? existing : defaultPattern);
       setConfigZone((first.allowed_slot_types as any) || 'FORMAL');
       setConfigRoomId(first.preferred_room_id || '');
@@ -652,7 +650,6 @@ export const App: React.FC = () => {
     return targetPair?.totalPeriods || 4;
   }, [configAssignmentKey, uniqueSubjectTeacherPairs]);
 
-  // Ekstrak blok-blok angka saat ini (Array angka)
   const currentConfigBlocks = useMemo(() => {
     if (!configSplitPattern) return [];
     return configSplitPattern
@@ -665,7 +662,6 @@ export const App: React.FC = () => {
     return currentConfigBlocks.reduce((a, b) => a + b, 0);
   }, [currentConfigBlocks]);
 
-  // Daftar opsi saran cepat pemecahan blok
   const splitSuggestions = useMemo(() => {
     const jp = currentExpectedJP;
     const list: string[] = [];
@@ -684,7 +680,6 @@ export const App: React.FC = () => {
     return Array.from(new Set(list));
   }, [currentExpectedJP]);
 
-  // Handler interaksi penambahan dan penghapusan blok
   const handleAddBlock = (b: number) => {
     const newBlocks = [...currentConfigBlocks, b];
     setConfigSplitPattern(newBlocks.join('+'));
@@ -1167,7 +1162,6 @@ export const App: React.FC = () => {
     }
   }, [filterMode, selectedId, classes, teachers, schoolProfile]);
 
-  // Filter khusus untuk modal "Pengaturan Kartu Beban Mengajar" (Default: hanya guru terpilih)
   const displayedConfigLessons = useMemo(() => {
     if (!configAssignmentKey) return lessons;
     const [tId] = configAssignmentKey.split('__');
@@ -1775,7 +1769,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL KARTU BEBAN MENGAJAR (DENGAN PEMILIH BLOK INTERAKTIF & SARAN OTOMATIS) */}
+      {/* MODAL KARTU BEBAN MENGAJAR */}
       {isLessonModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
@@ -1955,7 +1949,6 @@ export const App: React.FC = () => {
                     ))}
                   </div>
 
-                  {/* Saran Pemecahan Otomatis Berdasarkan Total JP */}
                   {splitSuggestions.length > 0 && (
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1">
@@ -2073,7 +2066,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL SLOT JAM */}
+      {/* MODAL SLOT JAM (PERIODE MENGGUNAKAN DROPDOWN) */}
       {isSlotModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden p-6 space-y-5 text-xs">
@@ -2131,15 +2124,27 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
+              {/* Baris Periode Ke- & Zona Waktu (Periode menggunakan Dropdown) */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold mb-1">Periode Ke-</label>
-                  <input
-                    type="number"
+                  <select
                     value={slotPeriod}
-                    onChange={(e) => setSlotPeriod(Number(e.target.value))}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  />
+                    onChange={(e) => {
+                      const newPeriod = Number(e.target.value);
+                      setSlotPeriod(newPeriod);
+                      if (slotName.startsWith('Jam ke-') || slotName === '') {
+                        setSlotName(`Jam ke-${newPeriod}`);
+                      }
+                    }}
+                    className="w-full p-2 border rounded-lg bg-white font-semibold"
+                  >
+                    {Array.from({ length: 14 }, (_, i) => i + 1).map((p) => (
+                      <option key={p} value={p}>
+                        Periode {p} (Jam ke-{p})
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="block font-semibold mb-1">Zona Waktu</label>
