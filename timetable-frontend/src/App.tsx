@@ -33,6 +33,7 @@ import {
   Eye,
   EyeOff,
   Filter,
+  Sparkles,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Session } from '@supabase/supabase-js';
@@ -122,7 +123,7 @@ export const App: React.FC = () => {
   const [configZone, setConfigZone] = useState<'PRE' | 'FORMAL' | 'POST'>('FORMAL');
   const [configRoomId, setConfigRoomId] = useState<string>('');
   const [savingCardConfig, setSavingCardConfig] = useState<boolean>(false);
-  const [showOnlySelectedTeacherInCardConfig, setShowOnlySelectedTeacherInCardConfig] = useState<boolean>(true); // <-- Default hanya guru terpilih
+  const [showOnlySelectedTeacherInCardConfig, setShowOnlySelectedTeacherInCardConfig] = useState<boolean>(true);
 
   // State Slot Waktu (Multi-Hari)
   const [targetDayIndices, setTargetDayIndices] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -595,6 +596,22 @@ export const App: React.FC = () => {
     return { isValid: issues.length === 0, issues };
   }, [teachers, classes, subjects, timeSlots, lessons]);
 
+  // Fungsi Saran Pemecahan Blok Berdasarkan Total JP
+  const getDefaultSplit = (jp: number): string => {
+    if (jp <= 1) return '1';
+    if (jp === 2) return '2';
+    if (jp === 3) return '2+1';
+    if (jp === 4) return '2+2';
+    if (jp === 5) return '3+2';
+    if (jp === 6) return '3+3';
+    if (jp === 7) return '4+3';
+    if (jp === 8) return '4+4';
+    if (jp % 2 === 0) return `${jp / 2}+${jp / 2}`;
+    const half = Math.ceil(jp / 2);
+    return `${half}+${jp - half}`;
+  };
+
+  // Handler saat berganti penugasan di modal pengaturan kartu
   const handleAssignmentKeyChange = (key: string) => {
     setConfigAssignmentKey(key);
     if (!key) {
@@ -605,14 +622,77 @@ export const App: React.FC = () => {
     const matchedLessons = lessons.filter((l) => l.teacher_id === tId && l.subject_id === sId);
     setConfigTargetClassIds(matchedLessons.map((l) => l.class_id));
 
+    const targetPair = uniqueSubjectTeacherPairs.find((p) => p.key === key);
+    const expectedJP = targetPair?.totalPeriods || 4;
+    const defaultPattern = getDefaultSplit(expectedJP);
+
     if (matchedLessons.length > 0) {
       const first = matchedLessons[0];
-      setConfigSplitPattern(
-        Array.isArray(first.split_pattern) ? first.split_pattern.join('+') : String(first.split_pattern)
-      );
+      const existing = Array.isArray(first.split_pattern)
+        ? first.split_pattern.join('+')
+        : String(first.split_pattern || '').trim();
+
+      const parts = existing.split('+').map(Number).filter((n) => !isNaN(n) && n > 0);
+      const sum = parts.reduce((a, b) => a + b, 0);
+
+      // Gunakan pola lama jika cocok dengan total JP, jika tidak setel ke saran default
+      setConfigSplitPattern(sum === expectedJP ? existing : defaultPattern);
       setConfigZone((first.allowed_slot_types as any) || 'FORMAL');
       setConfigRoomId(first.preferred_room_id || '');
+    } else {
+      setConfigSplitPattern(defaultPattern);
+      setConfigZone('FORMAL');
+      setConfigRoomId('');
     }
+  };
+
+  const currentExpectedJP = useMemo(() => {
+    if (!configAssignmentKey) return 4;
+    const targetPair = uniqueSubjectTeacherPairs.find((p) => p.key === configAssignmentKey);
+    return targetPair?.totalPeriods || 4;
+  }, [configAssignmentKey, uniqueSubjectTeacherPairs]);
+
+  // Ekstrak blok-blok angka saat ini (Array angka)
+  const currentConfigBlocks = useMemo(() => {
+    if (!configSplitPattern) return [];
+    return configSplitPattern
+      .split('+')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !isNaN(n) && n > 0);
+  }, [configSplitPattern]);
+
+  const currentConfigSum = useMemo(() => {
+    return currentConfigBlocks.reduce((a, b) => a + b, 0);
+  }, [currentConfigBlocks]);
+
+  // Daftar opsi saran cepat pemecahan blok
+  const splitSuggestions = useMemo(() => {
+    const jp = currentExpectedJP;
+    const list: string[] = [];
+    if (jp === 1) list.push('1');
+    else if (jp === 2) list.push('2', '1+1');
+    else if (jp === 3) list.push('2+1', '3');
+    else if (jp === 4) list.push('2+2', '3+1', '4');
+    else if (jp === 5) list.push('3+2', '2+2+1');
+    else if (jp === 6) list.push('3+3', '2+2+2', '4+2');
+    else if (jp === 7) list.push('4+3', '3+2+2');
+    else if (jp === 8) list.push('4+4', '3+3+2');
+    else {
+      const half = Math.ceil(jp / 2);
+      list.push(`${half}+${jp - half}`);
+    }
+    return Array.from(new Set(list));
+  }, [currentExpectedJP]);
+
+  // Handler interaksi penambahan dan penghapusan blok
+  const handleAddBlock = (b: number) => {
+    const newBlocks = [...currentConfigBlocks, b];
+    setConfigSplitPattern(newBlocks.join('+'));
+  };
+
+  const handleRemoveBlock = (idx: number) => {
+    const newBlocks = currentConfigBlocks.filter((_, i) => i !== idx);
+    setConfigSplitPattern(newBlocks.join('+'));
   };
 
   const handleSaveCardConfig = async (e: React.FormEvent) => {
@@ -631,7 +711,7 @@ export const App: React.FC = () => {
     const sum = parts.reduce((a, b) => a + b, 0);
 
     if (sum !== expectedTotalJP) {
-      alert(`Pola pecah blok (${parts.join('+')} = ${sum} JP) tidak cocok dengan beban (${expectedTotalJP} JP)!`);
+      alert(`Pola pecah blok (${parts.join('+')} = ${sum} JP) belum cocok dengan beban jam (${expectedTotalJP} JP)!`);
       return;
     }
 
@@ -1332,8 +1412,9 @@ export const App: React.FC = () => {
 
             <button
               onClick={() => {
-                if (uniqueSubjectTeacherPairs.length > 0 && !configAssignmentKey) {
-                  handleAssignmentKeyChange(uniqueSubjectTeacherPairs[0].key);
+                if (uniqueSubjectTeacherPairs.length > 0) {
+                  const firstKey = configAssignmentKey || uniqueSubjectTeacherPairs[0].key;
+                  handleAssignmentKeyChange(firstKey);
                 }
                 setIsLessonModalOpen(true);
               }}
@@ -1694,7 +1775,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* MODAL KARTU BEBAN MENGAJAR (DENGAN FILTER GURU TERPILIH) */}
+      {/* MODAL KARTU BEBAN MENGAJAR (DENGAN PEMILIH BLOK INTERAKTIF & SARAN OTOMATIS) */}
       {isLessonModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden p-6 space-y-4 text-xs max-h-[90vh] flex flex-col">
@@ -1706,6 +1787,7 @@ export const App: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveCardConfig} className="p-4 bg-slate-50 rounded-xl border space-y-3.5 shrink-0">
+              {/* 1. Pilih Penugasan Guru & Mapel */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Pilih Penugasan Guru & Mapel:</label>
                 <select
@@ -1725,6 +1807,7 @@ export const App: React.FC = () => {
                 </select>
               </div>
 
+              {/* 2. Terapkan ke Kelas */}
               <div className="pt-2 border-t">
                 <label className="block font-bold text-slate-700 mb-2">Terapkan ke Kelas:</label>
                 <div className="flex flex-wrap gap-2">
@@ -1761,57 +1844,165 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t">
+              {/* 3. Pengaturan Zona Slot & Ruangan Khusus */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Pola Pecah Blok</label>
-                  <input
-                    type="text"
-                    value={configSplitPattern}
-                    onChange={(e) => setConfigSplitPattern(e.target.value)}
-                    className="w-full p-2 border rounded-lg bg-white font-mono font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Zona Slot</label>
+                  <label className="block font-bold text-slate-700 mb-1">Zona Slot Waktu</label>
                   <select
                     value={configZone}
                     onChange={(e) => setConfigZone(e.target.value as any)}
-                    className="w-full p-2 border rounded-lg bg-white"
+                    className="w-full p-2 border rounded-lg bg-white font-medium"
                   >
-                    <option value="FORMAL">FORMAL</option>
-                    <option value="PRE">PRE</option>
-                    <option value="POST">POST</option>
+                    <option value="FORMAL">FORMAL (Jam KBM Reguler)</option>
+                    <option value="PRE">PRE (Sebelum Jam KBM)</option>
+                    <option value="POST">POST (Setelah Jam KBM / Ekstra)</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Ruangan Khusus</label>
+                  <label className="block font-bold text-slate-700 mb-1">Ruangan Khusus (Opsional)</label>
                   <select
                     value={configRoomId}
                     onChange={(e) => setConfigRoomId(e.target.value)}
-                    className="w-full p-2 border rounded-lg bg-white"
+                    className="w-full p-2 border rounded-lg bg-white font-medium"
                   >
-                    <option value="">-- Reguler --</option>
+                    <option value="">-- Reguler (Ruang Kelas Masing-masing) --</option>
                     {rooms.map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.room_name}
+                        {r.room_name} ({r.room_type || 'UMUM'})
                       </option>
                     ))}
                   </select>
                 </div>
               </div>
 
+              {/* 4. Pemilih Pola Pecah Blok dengan Tombol 1 s.d. 7 & Saran Default */}
+              <div className="pt-2.5 border-t space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block font-bold text-slate-700">
+                    Pola Pecah Blok (Beban Mapel: {currentExpectedJP} JP per Pekan)
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    {currentConfigSum === currentExpectedJP ? (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10.5px] flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <span>Sesuai ({currentConfigSum} JP)</span>
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold text-[10.5px] flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3 text-rose-600" />
+                        <span>
+                          {currentConfigSum < currentExpectedJP
+                            ? `Kurang ${currentExpectedJP - currentConfigSum} JP (${currentConfigSum}/${currentExpectedJP})`
+                            : `Lebih ${currentConfigSum - currentExpectedJP} JP (${currentConfigSum}/${currentExpectedJP})`}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Tampilan Visual Blok Terpilih */}
+                <div className="p-2.5 bg-white border border-slate-300 rounded-xl flex items-center justify-between min-h-[46px] gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {currentConfigBlocks.length > 0 ? (
+                      currentConfigBlocks.map((block, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-lg font-mono font-bold text-xs shadow-2xs"
+                        >
+                          <span>{block} JP</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveBlock(idx)}
+                            className="p-0.5 hover:bg-indigo-200 rounded text-indigo-500 hover:text-indigo-800 transition"
+                            title={`Hapus blok ${block} JP`}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <span className="text-slate-400 italic text-xs">
+                        Belum ada blok yang dipilih. Klik tombol blok angka di bawah untuk menambah.
+                      </span>
+                    )}
+                  </div>
+
+                  {currentConfigBlocks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setConfigSplitPattern('')}
+                      className="text-[11px] text-rose-600 hover:underline font-semibold shrink-0"
+                    >
+                      Hapus Semua
+                    </button>
+                  )}
+                </div>
+
+                {/* Tombol Menambahkan Blok (Tersedia: 1, 2, 3, 4, 5, 6, 7) & Saran Cepat */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-500 mr-0.5">Tambah Blok:</span>
+                    {[1, 2, 3, 4, 5, 6, 7].map((b) => (
+                      <button
+                        key={b}
+                        type="button"
+                        onClick={() => handleAddBlock(b)}
+                        className="w-8 h-8 rounded-lg border border-slate-300 bg-white hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-700 font-bold font-mono text-xs shadow-2xs transition active:scale-95 flex items-center justify-center cursor-pointer"
+                        title={`Tambah blok ${b} JP`}
+                      >
+                        +{b}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Saran Pemecahan Otomatis Berdasarkan Total JP */}
+                  {splitSuggestions.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-amber-500" /> Saran:
+                      </span>
+                      {splitSuggestions.map((sug) => (
+                        <button
+                          key={sug}
+                          type="button"
+                          onClick={() => setConfigSplitPattern(sug)}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-mono font-bold border transition cursor-pointer ${
+                            configSplitPattern === sug
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                              : 'bg-indigo-50/70 hover:bg-indigo-100 text-indigo-800 border-indigo-200'
+                          }`}
+                        >
+                          {sug}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Tombol Simpan Konfigurasi */}
               <div className="flex justify-end pt-2">
                 <button
                   type="submit"
-                  disabled={savingCardConfig || configTargetClassIds.length === 0}
-                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition"
+                  disabled={
+                    savingCardConfig ||
+                    configTargetClassIds.length === 0 ||
+                    currentConfigSum !== currentExpectedJP
+                  }
+                  className={`px-5 py-2 font-bold rounded-lg transition text-white ${
+                    savingCardConfig ||
+                    configTargetClassIds.length === 0 ||
+                    currentConfigSum !== currentExpectedJP
+                      ? 'bg-slate-300 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
+                  }`}
                 >
                   Terapkan Pengaturan ({configTargetClassIds.length} Kelas)
                 </button>
               </div>
             </form>
 
-            {/* Header Daftar Kartu & Tombol Toggle Filter Guru */}
+            {/* Header Daftar Kartu & Toggle Filter Guru */}
             <div className="flex items-center justify-between border-t pt-3 shrink-0">
               <div className="flex items-center gap-2">
                 <span className="font-bold text-slate-700">
