@@ -14,7 +14,7 @@ import {
   AlertTriangle,
   Compass,
   Layers,
-  BookOpen,
+  Filter,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { Teacher, Subject, ClassRoom, Lesson, CurriculumStructure } from '../types';
@@ -46,6 +46,7 @@ export const AssignmentModal: React.FC<Props> = ({
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
+  const [showOnlySelectedTeacher, setShowOnlySelectedTeacher] = useState<boolean>(true); // <-- Default: hanya guru terpilih
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
@@ -155,15 +156,12 @@ export const AssignmentModal: React.FC<Props> = ({
 
   // 7. PENYARINGAN KELAS KETAT: HANYA KELAS YANG JENJANGNYA TERDAFTAR PADA MAPEL INI
   const availableClassesWithScores = useMemo(() => {
-    // Filter hanya kelas yang jenjangnya terdaftar di kurikulum untuk mapel ini
-    // dan belum pernah diajar oleh guru ini
     const filteredClasses = classes.filter((cls) => {
       const isGradeAllowed = allowedGradeLevels.has(cls.grade_level);
       const isNotAssignedToTeacher = !teacherAnalytics.assignedClassIds.has(cls.id);
       return isGradeAllowed && isNotAssignedToTeacher;
     });
 
-    // Statistik beban jam kelas
     const classTotalJPMap = new Map<string, number>();
     const gradeMaxJPMap = new Map<number, number>();
 
@@ -219,7 +217,6 @@ export const AssignmentModal: React.FC<Props> = ({
       });
   }, [classes, allowedGradeLevels, teacherAnalytics, lessons, selectedSubjectId, subjectCurriculumRules]);
 
-  // Bersihkan pilihan kelas yang tidak lagi relevan saat mapel atau guru berganti
   useEffect(() => {
     setSelectedClassIds((prev) =>
       prev.filter((cId) => availableClassesWithScores.some((item) => item.cls.id === cId))
@@ -282,8 +279,16 @@ export const AssignmentModal: React.FC<Props> = ({
     return warnings;
   }, [selectedSubjectId, selectedClassIds, teacherAnalytics, classes]);
 
+  // 10. DAFTAR PENUGASAN YANG DITAMPILKAN (FILTER GURU TERPILIH)
+  const displayedLessons = useMemo(() => {
+    if (showOnlySelectedTeacher && selectedTeacherId) {
+      return lessons.filter((l) => l.teacher_id === selectedTeacherId);
+    }
+    return lessons;
+  }, [lessons, showOnlySelectedTeacher, selectedTeacherId]);
+
   // =========================================================================
-  // SELURUH HOOK DI ATAS TUNTAS DIEKSEKUSI. BARU EARLY RETURN DI SINI:
+  // HOOKS SELESAI, EARLY RETURN DI SINI:
   // =========================================================================
   if (!isOpen) return null;
 
@@ -319,7 +324,6 @@ export const AssignmentModal: React.FC<Props> = ({
     setSelectedClassIds([]);
   };
 
-  // Simpan Penugasan: Setiap kelas otomatis menggunakan standar JP jenjangnya dari kurikulum
   const handleSaveAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTeacherId || !selectedSubjectId) {
@@ -528,7 +532,7 @@ export const AssignmentModal: React.FC<Props> = ({
                 )}
               </div>
 
-              {/* Kolom 3: Info Standar Alokasi JP Kurikulum (Input manual sudah dihapus) */}
+              {/* Kolom 3: Info Standar Alokasi JP Kurikulum */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
                   <span>Standar JP Kurikulum</span>
@@ -584,7 +588,7 @@ export const AssignmentModal: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Pilihan Rombel Kelas (Hanya Jenjang yang Sesuai Kurikulum Mapel Terpilih) */}
+            {/* Pilihan Rombel Kelas */}
             <div className="pt-2 border-t border-slate-200">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                 <div>
@@ -630,7 +634,6 @@ export const AssignmentModal: React.FC<Props> = ({
               </div>
 
               {allowedGradeLevels.size === 0 ? (
-                /* Jika mapel belum didaftarkan di jenjang manapun pada master kurikulum */
                 <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs flex items-start gap-3">
                   <Compass className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                   <div>
@@ -642,7 +645,6 @@ export const AssignmentModal: React.FC<Props> = ({
                   </div>
                 </div>
               ) : availableClassesWithScores.length > 0 ? (
-                /* Grid Kelas yang Sesuai Jenjang Mapel */
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                   {availableClassesWithScores.map(({ cls, isSameDominantGrade, existingLessonInClass, jpDeficit, currRule }) => {
                     const isChecked = selectedClassIds.includes(cls.id);
@@ -673,7 +675,6 @@ export const AssignmentModal: React.FC<Props> = ({
                             <span>Kelas {cls.class_name}</span>
                           </div>
                           
-                          {/* Label Beban JP Otomatis Kurikulum */}
                           <span
                             className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
                               isChecked
@@ -754,11 +755,32 @@ export const AssignmentModal: React.FC<Props> = ({
             </div>
           </form>
 
-          {/* Daftar Distribusi Penugasan */}
+          {/* 11. DAFTAR DISTRIBUSI PENUGASAN (DEFAULT: HANYA GURU TERPILIH) */}
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <div className="bg-slate-100 px-4 py-2.5 border-b border-slate-200 font-bold text-slate-700 flex items-center justify-between">
-              <span>Daftar Distribusi Penugasan Mengajar ({lessons.length})</span>
+              <div className="flex items-center gap-2">
+                <span>
+                  {showOnlySelectedTeacher
+                    ? `Distribusi Penugasan: ${selectedTeacher?.full_name || 'Guru Terpilih'}`
+                    : 'Distribusi Penugasan Seluruh Guru'}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-mono">
+                  {displayedLessons.length} Kartu
+                </span>
+              </div>
+
+              {/* Tombol Toggle: Hanya Guru Terpilih vs Semua Guru */}
+              <button
+                type="button"
+                onClick={() => setShowOnlySelectedTeacher(!showOnlySelectedTeacher)}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-slate-200 border border-slate-300 text-slate-700 rounded-lg text-[11px] font-semibold transition shadow-2xs"
+                title="Alihkan tampilan antara hanya guru terpilih atau seluruh penugasan sekolah"
+              >
+                <Filter className="w-3 h-3 text-indigo-600" />
+                <span>{showOnlySelectedTeacher ? 'Tampilkan Semua Guru' : 'Hanya Guru Terpilih'}</span>
+              </button>
             </div>
+
             <table className="w-full text-left border-collapse">
               <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                 <tr>
@@ -770,7 +792,7 @@ export const AssignmentModal: React.FC<Props> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {lessons.map((l) => {
+                {displayedLessons.map((l) => {
                   const tch = teachers.find((t) => t.id === l.teacher_id);
                   const sub = subjects.find((s) => s.id === l.subject_id);
                   const cls = classes.find((c) => c.id === l.class_id);
@@ -798,10 +820,12 @@ export const AssignmentModal: React.FC<Props> = ({
                     </tr>
                   );
                 })}
-                {lessons.length === 0 && (
+                {displayedLessons.length === 0 && (
                   <tr>
                     <td colSpan={5} className="p-4 text-center text-slate-400 italic">
-                      Belum ada penugasan guru yang dibuat.
+                      {showOnlySelectedTeacher
+                        ? `Belum ada penugasan mengajar untuk ${selectedTeacher?.full_name || 'guru ini'}.`
+                        : 'Belum ada data penugasan guru yang dibuat.'}
                     </td>
                   </tr>
                 )}
